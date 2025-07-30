@@ -92,6 +92,24 @@ MDB Agent Pro is a professional desktop application that bridges Microsoft Acces
    run_agent_pro.bat
    ```
 
+### Executable Version (No Python Required)
+
+If you prefer a standalone executable that doesn't require Python installation:
+
+1. **Build the executable:**
+   ```bash
+   # Automatic build
+   build.bat
+   
+   # Or manual build
+   python build_exe.py
+   ```
+
+2. **Distribute the release:**
+   - Copy the entire `release/` folder to target PC
+   - Double-click `MDBAgentPro.exe` to run
+   - No Python installation required!
+
 ### Windows 7 Installation Notes
 
 If you're installing on Windows 7, follow these additional steps:
@@ -339,22 +357,30 @@ This software is proprietary and confidential. Unauthorized copying, distributio
    python mdb_agent_pro.py
    ```
 
-### Opsi 2: Build Executable
+### Opsi 2: Build Executable (Recommended for Distribution)
 
-1. **Automated build**
+1. **Build menggunakan script otomatis**
    ```bash
-   python build.py
+   # Double-click atau run:
+   build.bat
+   
+   # Atau manual:
+   python build_exe.py
    ```
 
-2. **Manual build**
-   ```bash
-   pip install -r requirements.txt
-   pyinstaller --onefile --windowed --name=MDBAgentPro mdb_agent_pro.py
-   ```
+2. **Distribusi executable**
+   - Copy folder `release/` ke PC target
+   - Double-click `MDBAgentPro.exe`
+   - **Tidak perlu install Python!**
 
-3. **Executable tersedia di**
+3. **File executable siap distribusi**
    ```
-   dist/MDBAgentPro.exe
+   release/
+   ├── MDBAgentPro.exe        # Main executable (25MB)
+   ├── config.example.json    # Configuration template
+   ├── README.md             # Documentation
+   ├── INSTALL.md           # Installation guide
+   └── logo-PTSAG.png       # Company logo
    ```
 
 ## 📖 Panduan Penggunaan
