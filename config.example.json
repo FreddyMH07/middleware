@@ -1,0 +1,10 @@
+{
+  "mdb_file": "",
+  "mdb_password": "qwerty123",
+  "selected_table": "",
+  "api_endpoint": "https://your-api-endpoint.com/data",
+  "api_key": "your-api-key-here",
+  "push_interval": 60,
+  "last_status": "Ready",
+  "log_entries": []
+}

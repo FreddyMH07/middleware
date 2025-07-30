@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Application specific
+config.json
+config.encrypted
+agent.log
+agent_data.db
+*.db
+*.sqlite
+*.sqlite3
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Development files
+debug_*.py
+test_*.py
+*_backup.py
+*_clean.py
+build.py
+dev_tools.bat
+
+# Documentation drafts (keep main README.md)
+DEPLOYMENT.md
+FEATURE_OVERVIEW.md
+FINAL_PROJECT_STATUS.md
+INTERFACE_UPDATE.md
+LANGUAGE_GUIDE.md
+LANGUAGE_SWITCHING_FIX.md
+MAPPING_GUIDE.md
+PROJECT_STRUCTURE.md
+PROJECT_SUMMARY.md
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
