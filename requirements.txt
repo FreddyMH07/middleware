@@ -1,5 +1,24 @@
-pyodbc==4.0.39
-requests==2.31.0
-pyinstaller==6.3.0
-cryptography==41.0.7
-pillow==10.1.0
+# MDB Agent Pro v2.0 - Requirements
+# Professional Database-to-API Bridge
+# Author: Freddy Mazmur - PT Sahabat Agro Group
+
+# Core Dependencies
+pyodbc==4.0.39          # Database connectivity (SQL Server, Access)
+requests==2.31.0        # HTTP/HTTPS API communication
+cryptography==41.0.7    # Configuration encryption
+pillow==10.1.0          # Image processing
+
+# GUI Framework (usually included with Python)
+# tkinter - Already included in standard Python installation
+
+# Build Tools
+pyinstaller==6.3.0      # Executable building
+
+# Development Dependencies (optional)
+# pytest>=7.0.0         # Unit testing
+# black>=23.0.0          # Code formatting
+# flake8>=6.0.0          # Code linting
+
+# Optional Performance Dependencies
+# pandas>=2.0.0          # Data manipulation (if needed)
+# numpy>=1.24.0          # Numerical operations (if needed)

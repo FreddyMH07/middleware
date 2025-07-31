@@ -1,3 +1,6 @@
+# MDB Agent Pro v2.0 - Git Ignore File
+# Professional Database-to-API Bridge
+
 # Python
 __pycache__/
 *.py[cod]
@@ -18,6 +21,72 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Application Specific
+agent_data.db
+agent.log
+config.encrypted
+*.mdb
+*.accdb
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Build directories
+build/
+dist/
+release/
+
+# Development files
+debug_*.py
+test_*.py
+demo_*.py
+*_demo.py
+*_test.py
+dev_tools.*
+
+# Documentation (keep only README.md)
+*.md
+!README.md
+
+# Logs
+*.log
+logs/
 .installed.cfg
 *.egg
 MANIFEST

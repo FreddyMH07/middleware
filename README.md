@@ -1,45 +1,72 @@
-# MDB Agent Pro v2.0
+# MDB Agent Pro v2.0 🚀
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
-[![License](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
+**Professional Database-to-API Bridge for PT Sahabat Agro Group**
+
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/FreddyMH07/middleware)
+[![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://python.org)
+[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://microsoft.com/windows)
 
-**Professional Microsoft Access Database to API Bridge**
+## 📋 Overview
 
-Developed by **Freddy Mazmur** for **PT Sahabat Agro Group**
-
----
-
-## 🚀 Overview
-
-MDB Agent Pro is a professional desktop application that bridges Microsoft Access databases to REST APIs with visual field mapping, real-time monitoring, and enterprise-grade features.
+MDB Agent Pro adalah aplikasi middleware profesional yang menghubungkan database Microsoft Access (.mdb) dengan REST API endpoints. Dirancang khusus untuk PT Sahabat Agro Group dengan fokus pada integrasi TBS (Tandan Buah Segar) Receiving System.
 
 ## ✨ Key Features
 
-### 🔗 **Database Connectivity**
-- **Visual File Selection** - Browse and select .mdb/.accdb files
-- **Password Protection** - Secure database access with encryption
-- **Auto Table Detection** - Automatic discovery of database tables
-- **Real-time Preview** - Live data preview and validation
-- **Connection Health Monitoring** - Continuous connection status tracking
+### 🔗 **Smart Field Mapping**
+- Visual drag-and-drop interface untuk mapping database fields ke API
+- Support untuk TBS Receiving API dengan format JSON-RPC 2.0
+- Template system untuk konfigurasi yang dapat digunakan ulang
+- Real-time JSON preview dengan validasi
 
-### 🎯 **Visual Field Mapping**
-- **Drag-and-Drop Interface** - Intuitive field mapping system
-- **API Structure Import** - Import from JSON specifications or auto-detect
-- **Data Transformations** - Built-in data formatting and conversion
-- **Template Management** - Save and reuse mapping configurations
-- **Real-time JSON Preview** - Live preview of API payload
-- **Mapping Validation** - Comprehensive validation and error checking
+### ⚡ **Advanced API Integration**
+- Multiple authentication methods (API Key, Login, Bearer Token)
+- Smart Mode dengan Test Connection integration
+- Automatic retry mechanism untuk failed requests
+- Comprehensive error handling dan logging
 
-### 📊 **Enterprise Monitoring**
-- **Transaction Logging** - Detailed audit trails and statistics
-- **Health Dashboards** - Real-time system health monitoring
-- **API Performance Tracking** - Response time and error rate monitoring
-- **Automated Scheduling** - Background data synchronization
-- **Buffer Management** - Offline resilience and retry mechanisms
+### 🛡️ **Enterprise Features**
+- Health monitoring dan diagnostics
+- Transaction logging dengan audit trail
+- Automated scheduling untuk data synchronization
+- Background processing dengan minimal system impact
 
-### 🛡️ **Professional Features**
-- **Multi-threaded Processing** - Efficient background operations
+### 🎯 **User Experience**
+- Modern tabbed interface dengan responsive design
+- Context-sensitive help dan validation
+- Professional administrative controls
+- Comprehensive status indicators
+
+## 🚀 Quick Start
+
+### Prerequisites
+```bash
+Python 3.10+
+Windows 10/11
+Microsoft Access Database Engine
+```
+
+### Installation
+
+#### Method 1: Run from Source
+```bash
+# Clone repository
+git clone https://github.com/FreddyMH07/middleware.git
+cd middleware
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run application
+python mdb_agent_pro.py
+```
+
+#### Method 2: Executable (Recommended)
+```bash
+# Download latest release from GitHub
+# Extract to desired location
+# Run MDBAgentPro.exe
+```
 - **Comprehensive Logging** - Detailed application and error logs
 - **Admin Controls** - Secure administrative functions
 - **Theme Support** - Light and dark mode interface
@@ -152,6 +179,12 @@ If you're installing on Windows 7, follow these additional steps:
 2. **API Configuration**
    - Navigate to "API Settings" tab
    - Enter your API endpoint URL
+   - **For Login APIs**: If endpoint contains `/api/auth/login`, fill login credentials:
+     - Username/Login
+     - Password (masked input)
+     - Database name
+     - Click "Login / Get Token" to automatically obtain API token
+   - **For Direct APIs**: Manually enter API Key/Token
    - Configure authentication (API key/token)
    - Test the connection
 
@@ -438,6 +471,43 @@ This software is proprietary and confidential. Unauthorized copying, distributio
    - **Stop Agent**: Stop auto push
    - **Clear Buffer**: Clear data pending
 
+### 5. 🔐 Login API Configuration
+**For APIs that require username/password authentication:**
+
+1. Buka tab **"API Settings"**
+2. Masukkan **Endpoint URL** yang mengandung `/api/auth/login` atau `/auth/login`
+3. **Login Section** akan muncul otomatis dengan fields:
+   - **Username/Login**: Username atau email untuk login
+   - **Password**: Password (input ter-mask untuk keamanan)
+   - **Database**: Nama database yang digunakan
+4. Klik **"Login / Get Token"** untuk otomatis login dan ambil token
+5. Jika login berhasil:
+   - **API Key/Token** akan otomatis terisi
+   - Status akan menampilkan "Login successful!"
+   - Token siap digunakan untuk API calls
+6. **Save API Settings** untuk menyimpan konfigurasi
+
+**Supported Login Response Formats:**
+```json
+{
+  "access_token": "your_token_here"
+}
+// atau
+{
+  "token": "your_token_here"
+}
+// atau
+{
+  "jwt": "your_token_here"
+}
+```
+
+**Troubleshooting Login:**
+- ✅ Pastikan endpoint mengandung `/auth/login`
+- ✅ Periksa username, password, dan database name
+- ✅ Cek koneksi internet dan URL endpoint
+- ✅ Pastikan API server berjalan dan dapat diakses
+
 ## 🔧 Fitur Advanced
 
 ### 🛡️ Security Features
@@ -464,9 +534,39 @@ This software is proprietary and confidential. Unauthorized copying, distributio
 - **Duplicate Prevention**: UUID mencegah duplikasi data
 - **Field Mapping**: Apply transformasi sebelum kirim ke API
 
+### 🚛 TBS Receiving API Integration
+**Specialized support for PT Sahabat Agro Group TBS (Tandan Buah Segar) receiving system:**
+
+- **JSON-RPC 2.0 Format**: Compliance with JSON-RPC specification
+- **Nested Order Data**: Support for complex order_data structure
+- **Template Categories**: Built-in TBS Receiving templates
+- **Real-time Validation**: TBS-specific field validation
+- **Quality Parameters**: Support for TBS quality metrics
+
+**TBS API Format Example:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "receive_order",
+  "params": {
+    "order_data": {
+      "order_id": "ORD001",
+      "supplier_code": "SUP001",
+      "delivery_date": "2025-01-15",
+      "total_weight": 1250.5,
+      "quality_grade": "A",
+      "moisture_content": 21.5,
+      "dirt_content": 2.1,
+      "bunch_count": 125
+    }
+  },
+  "id": 1
+}
+```
+
 ## 📝 Struktur Data
 
-### Format Payload API
+### Format Payload API Standar
 ```json
 {
   "id": 1001,
@@ -483,10 +583,120 @@ This software is proprietary and confidential. Unauthorized copying, distributio
 }
 ```
 
+### Format TBS Receiving API (JSON-RPC 2.0)
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "receive_order",
+  "params": {
+    "order_data": {
+      "order_id": "TBS-ORD-20250115-001",
+      "supplier_code": "SUP001",
+      "supplier_name": "Kebun Sawit Makmur",
+      "delivery_date": "2025-01-15",
+      "delivery_time": "08:30:00",
+      "vehicle_number": "B1234ABC",
+      "driver_name": "Ahmad Suharto",
+      "total_weight": 1250.5,
+      "tare_weight": 8500.0,
+      "net_weight": 1242.0,
+      "quality_grade": "A",
+      "moisture_content": 21.5,
+      "dirt_content": 2.1,
+      "foreign_matter": 0.5,
+      "bunch_count": 125,
+      "loose_fruit_kg": 15.2,
+      "rotten_bunches": 2,
+      "empty_bunches": 1,
+      "long_stalk": 3,
+      "price_per_kg": 1850,
+      "total_amount": 2297700,
+      "payment_method": "Transfer",
+      "notes": "Kualitas bagus, pengiriman tepat waktu",
+      "inspector_name": "Budi Santoso",
+      "created_by": "operator1",
+      "location_code": "REC001"
+    }
+  },
+  "id": 1
+}
+```
+
 ### HTTP Headers
 ```
 Content-Type: application/json
 Authorization: Bearer <your-api-key>
+```
+
+## ⚙️ Configuration Examples
+
+### Standard API Configuration
+```json
+{
+  "api_endpoint": "https://api.example.com/data",
+  "api_key": "your-standard-api-key",
+  "authentication_type": "api_key",
+  "field_mapping": {
+    "ID": "id",
+    "Name": "name", 
+    "Timestamp": "timestamp",
+    "Value": "value"
+  }
+}
+```
+
+### TBS Receiving API Configuration
+```json
+{
+  "api_endpoint": "https://tbs-api.sahabatagro.co.id/api/receive",
+  "api_key": "tbs-receiving-token",
+  "authentication_type": "bearer",
+  "api_format": "json-rpc-2.0",
+  "rpc_method": "receive_order",
+  "field_mapping": {
+    "OrderID": "order_data.order_id",
+    "SupplierCode": "order_data.supplier_code",
+    "SupplierName": "order_data.supplier_name",
+    "DeliveryDate": "order_data.delivery_date",
+    "DeliveryTime": "order_data.delivery_time",
+    "VehicleNumber": "order_data.vehicle_number",
+    "DriverName": "order_data.driver_name",
+    "TotalWeight": "order_data.total_weight",
+    "TareWeight": "order_data.tare_weight",
+    "NetWeight": "order_data.net_weight",
+    "QualityGrade": "order_data.quality_grade",
+    "MoistureContent": "order_data.moisture_content",
+    "DirtContent": "order_data.dirt_content",
+    "ForeignMatter": "order_data.foreign_matter",
+    "BunchCount": "order_data.bunch_count",
+    "LooseFruitKg": "order_data.loose_fruit_kg",
+    "RottenBunches": "order_data.rotten_bunches",
+    "EmptyBunches": "order_data.empty_bunches",
+    "LongStalk": "order_data.long_stalk",
+    "PricePerKg": "order_data.price_per_kg",
+    "TotalAmount": "order_data.total_amount",
+    "PaymentMethod": "order_data.payment_method",
+    "Notes": "order_data.notes",
+    "InspectorName": "order_data.inspector_name",
+    "CreatedBy": "order_data.created_by",
+    "LocationCode": "order_data.location_code"
+  }
+}
+```
+
+### Login-based API Configuration  
+```json
+{
+  "api_endpoint": "https://api.example.com/api/auth/login",
+  "authentication_type": "login",
+  "login_credentials": {
+    "username": "your_username",
+    "password": "your_password", 
+    "database": "production_db"
+  },
+  "token_endpoint": "/api/auth/login",
+  "data_endpoint": "/api/data"
+}
 ```
 
 ## ⚙️ Konfigurasi File
@@ -512,32 +722,46 @@ File `config.encrypted` otomatis dibuat dengan enkripsi AES:
 }
 ```
 
-## 🛠️ Development
+## 🛠️ Development & Build
 
-### Project Structure
+### Project Structure (Final Clean Version)
 ```
-AgentUI/
-├── mdb_agent_pro.py         # Main application (Pro version)
-├── mdb_agent.py             # Legacy simple version
-├── requirements.txt         # Dependencies
-├── build.py                 # Build script
-├── test.py                  # Test utilities
-├── config.example.json      # Example configuration
-├── config.encrypted         # Encrypted config (auto-generated)
-├── agent_data.db           # SQLite database (auto-generated)
-├── agent.log               # Application log (auto-generated)
-├── README.md               # Documentation
-└── .github/
-    └── copilot-instructions.md
+middleware/
+├── mdb_agent_pro.py         # Main application (8746+ lines)
+├── build_exe.py             # Professional build script
+├── requirements.txt         # Dependencies with comments
+├── run_agent_pro.bat       # Windows launcher script
+├── config.example.json      # Configuration template
+├── logo-PTSAG.png          # PT Sahabat Agro Group logo
+├── README.md               # Complete documentation
+├── .gitignore              # Git ignore rules
+├── .git/                   # Git repository
+├── release/                # Build output directory
+│   ├── MDBAgentPro.exe    # Standalone executable
+│   ├── INSTALL.md         # Installation guide
+│   └── (support files)    # Required runtime files
+├── agent_data.db          # SQLite buffer database
+├── agent.log              # Application logs
+└── config.encrypted       # Encrypted configuration
 ```
 
-### Dependencies
-- **pyodbc**: Microsoft Access database connectivity
-- **requests**: HTTP API communication
-- **cryptography**: AES encryption for configuration
-- **sqlite3**: Local buffer database (built-in)
-- **tkinter**: GUI framework (built-in)
-- **pyinstaller**: Executable packaging
+### Core Features Implementation
+- **✅ Smart Mode Architecture** - Complete Test Connection integration
+- **✅ TBS Receiving API** - JSON-RPC 2.0 support with nested structure
+- **✅ Professional GUI** - Modern tabbed interface with dark theme
+- **✅ Enterprise Security** - AES encryption, admin controls, audit logging
+- **✅ Template System** - Save/load field mapping configurations
+- **✅ Real-time Monitoring** - Health checks, status indicators, logging
+- **✅ Robust Error Handling** - Retry mechanisms, buffer system, validation
+
+### Technologies Used
+- **Python 3.8+**: Core application framework
+- **Tkinter**: Cross-platform GUI framework
+- **PyODBC**: Microsoft Access database connectivity
+- **Requests**: HTTP API communication with retry logic
+- **Cryptography**: AES encryption for secure configuration
+- **SQLite3**: Local buffer and logging database
+- **PyInstaller**: Executable packaging and distribution
 
 ### Running Tasks
 ```bash
