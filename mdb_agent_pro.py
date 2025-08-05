@@ -323,6 +323,10 @@ class MDBAgentPro:
         # Database manager
         self.db_manager = DatabaseManager()
         
+        # Initialize status variable first
+        self.status_var = tk.StringVar()
+        self.status_var.set("Ready")
+        
         # Configuration
         self.config_file = "config.encrypted"
         self.config = self.load_config()
@@ -1116,10 +1120,11 @@ class MDBAgentPro:
                 self.logger.info(message)
         
         # Update status
-        self.status_var.set(f"{level}: {message}")
+        if hasattr(self, 'status_var') and self.status_var:
+            self.status_var.set(f"{level}: {message}")
         
         # Update dashboard if visible
-        if self.current_tab == "dashboard":
+        if hasattr(self, 'current_tab') and self.current_tab == "dashboard":
             self.refresh_dashboard()
     
     def browse_mdb_file(self):
@@ -8222,11 +8227,18 @@ RECENT ACTIVITY:
         save_frame.pack(fill=tk.X, pady=(20, 10))
         
         ttk.Button(save_frame, text="💾 Save Field Mapping", 
-                  command=self.save_field_mapping).pack(side=tk.LEFT, padx=(0, 10))
+                  command=self.save_field_mapping, style="Accent.TButton").pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(save_frame, text="🔄 Reset Mapping", 
                   command=self.reset_field_mapping).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(save_frame, text="📋 Generate Preview", 
                   command=self.update_json_preview).pack(side=tk.LEFT)
+        
+        # Update scroll region and scroll to show buttons
+        self.mapping_canvas.update_idletasks()
+        self.mapping_canvas.configure(scrollregion=self.mapping_canvas.bbox("all"))
+        
+        # Scroll to bottom to show save buttons
+        self.mapping_canvas.yview_moveto(1.0)
     
     def create_mapping_row(self, row_index, column):
         """Create a mapping row for a database column with drag-and-drop support"""
@@ -8265,6 +8277,14 @@ RECENT ACTIVITY:
         # Add double-click for API field details
         api_combo.bind("<Double-1>", lambda e: self.show_api_field_details(api_var.get()))
         
+        # Add handler for Custom field selection
+        def on_api_field_change(*args):
+            if api_var.get() == "Custom...":
+                self.show_custom_field_dialog(api_var, column['name'])
+            self.update_json_preview()
+        
+        api_var.trace('w', on_api_field_change)
+        
         # Transformation dropdown with more options
         transform_var = tk.StringVar()
         transform_combo = ttk.Combobox(row_frame, textvariable=transform_var, width=15, state="readonly")
@@ -8295,9 +8315,90 @@ RECENT ACTIVITY:
             api_var.set(mapping.get('api_field', '(unmapped)'))
             transform_var.set(mapping.get('transform', 'No Transform'))
         
-        # Bind change events for real-time preview update
-        api_var.trace('w', lambda *args: self.update_json_preview())
+        # Bind change events for real-time preview update  
         transform_var.trace('w', lambda *args: self.update_json_preview())
+    
+    def show_custom_field_dialog(self, api_var, column_name):
+        """Show dialog for custom API field entry"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Custom API Field - {column_name}")
+        dialog.geometry("500x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        main_frame = ttk.Frame(dialog, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Title
+        ttk.Label(main_frame, text=f"Custom API Field for: {column_name}", 
+                 font=('Arial', 12, 'bold')).pack(pady=(0, 15))
+        
+        # Instructions
+        instruction_text = """Enter the API field path using dot notation for nested structures:
+
+Examples for your JSON-RPC structure:
+• params.order_data[0].partner_id
+• params.order_data[0].journal_id  
+• params.order_data[0].date_order
+• params.order_data[0].vehicle_no
+• params.order_data[0].driver_name
+• params.order_data[0].order_line[0].product_code
+• params.order_data[0].order_line[0].qty_brutto
+• params.order_data[0].order_line[0].qty_tara
+• params.order_data[0].order_line[0].qty_netto"""
+        
+        instruction_label = ttk.Label(main_frame, text=instruction_text, 
+                                     font=('Arial', 9), justify=tk.LEFT)
+        instruction_label.pack(pady=(0, 15), fill=tk.X)
+        
+        # Entry field
+        ttk.Label(main_frame, text="API Field Path:").pack(anchor=tk.W)
+        entry_var = tk.StringVar()
+        entry = ttk.Entry(main_frame, textvariable=entry_var, width=50)
+        entry.pack(fill=tk.X, pady=(5, 15))
+        entry.focus()
+        
+        # Preset buttons for common patterns
+        preset_frame = ttk.LabelFrame(main_frame, text="Quick Presets", padding=10)
+        preset_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        preset_buttons = [
+            ("Main Data", "params.order_data[0]."),
+            ("Order Line", "params.order_data[0].order_line[0]."),
+            ("Weight Data", "params.order_data[0].order_line[0].qty_"),
+        ]
+        
+        for text, value in preset_buttons:
+            ttk.Button(preset_frame, text=text, 
+                      command=lambda v=value: entry_var.set(v)).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=15)
+        
+        def on_ok():
+            field_path = entry_var.get().strip()
+            if field_path:
+                api_var.set(field_path)
+                dialog.destroy()
+            else:
+                messagebox.showwarning("Invalid Input", "Please enter a valid API field path")
+        
+        def on_cancel():
+            api_var.set("(unmapped)")
+            dialog.destroy()
+        
+        ttk.Button(button_frame, text="OK", command=on_ok).pack(side=tk.RIGHT, padx=(10, 0))
+        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.RIGHT)
+        
+        # Bind Enter key
+        entry.bind('<Return>', lambda e: on_ok())
     
     def start_drag(self, event, column_name):
         """Start drag operation"""

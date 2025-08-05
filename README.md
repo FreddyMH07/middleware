@@ -700,7 +700,7 @@ Authorization: Bearer <your-api-key>
 ```
 
 ## ⚙️ Konfigurasi File
-
+https://web-middlware-production.up.railway.app//api/auth/login 
 File `config.encrypted` otomatis dibuat dengan enkripsi AES:
 ```json
 {
