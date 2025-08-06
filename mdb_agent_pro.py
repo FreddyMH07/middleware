@@ -7528,84 +7528,90 @@ RECENT ACTIVITY:
         if not hasattr(self, 'mapping_widgets') or not hasattr(self, 'table_columns'):
             return
             
-        # TBS field mapping patterns (database field -> TBS field)
+        # TBS field mapping patterns (database field -> TBS field path)
         tbs_mapping_patterns = {
             # Partner/Supplier fields
-            'supplier': 'partner_id',
-            'partner': 'partner_id', 
-            'vendor': 'partner_id',
-            'customer': 'partner_id',
+            'supplier': 'order_data.partner_id',
+            'partner': 'order_data.partner_id', 
+            'vendor': 'order_data.partner_id',
+            'customer': 'order_data.partner_id',
             
             # Journal/Bank fields
-            'bank': 'journal_id',
-            'journal': 'journal_id',
-            'payment': 'journal_id',
-            'account': 'journal_id',
+            'bank': 'order_data.journal_id',
+            'journal': 'order_data.journal_id',
+            'payment': 'order_data.journal_id',
+            'account': 'order_data.journal_id',
             
             # Date fields
-            'date': 'date_order',
-            'time': 'date_order',
-            'created': 'date_order',
-            'order_date': 'date_order',
+            'date': 'order_data.date_order',
+            'time': 'order_data.date_order',
+            'created': 'order_data.date_order',
+            'order_date': 'order_data.date_order',
+            'tanggal': 'order_data.date_order',
             
             # Officer fields
-            'officer': 'officers',
-            'user': 'officers',
-            'operator': 'officers',
-            'staff': 'officers',
+            'officer': 'order_data.officers',
+            'user': 'order_data.officers',
+            'operator': 'order_data.officers',
+            'staff': 'order_data.officers',
             
             # Description fields
-            'description': 'keterangan_description',
-            'note': 'keterangan_description',
-            'remark': 'keterangan_description',
-            'comment': 'keterangan_description',
+            'description': 'order_data.keterangan_description',
+            'note': 'order_data.keterangan_description',
+            'remark': 'order_data.keterangan_description',
+            'comment': 'order_data.keterangan_description',
+            'keterangan': 'order_data.keterangan_description',
             
             # Driver fields
-            'driver': 'driver_name',
-            'supir': 'driver_name',
+            'driver': 'order_data.driver_name',
+            'supir': 'order_data.driver_name',
             
             # Vehicle fields
-            'vehicle': 'vehicle_no',
-            'truck': 'vehicle_no',
-            'mobil': 'vehicle_no',
-            'nopol': 'vehicle_no',
+            'vehicle': 'order_data.vehicle_no',
+            'truck': 'order_data.vehicle_no',
+            'mobil': 'order_data.vehicle_no',
+            'nopol': 'order_data.vehicle_no',
             
             # Warehouse fields
-            'warehouse': 'destination_warehouse_id',
-            'gudang': 'destination_warehouse_id',
+            'warehouse': 'order_data.destination_warehouse_id',
+            'gudang': 'order_data.destination_warehouse_id',
             
             # Branch fields
-            'branch': 'branch_id',
-            'cabang': 'branch_id',
+            'branch': 'order_data.branch_id',
+            'cabang': 'order_data.branch_id',
             
             # Product fields
-            'product': 'product_code',
-            'item': 'product_code',
-            'barang': 'product_code',
+            'product': 'order_data.order_line.product_code',
+            'item': 'order_data.order_line.product_code',
+            'barang': 'order_data.order_line.product_code',
+            'jenis': 'order_data.order_line.product_code',
+            'jenispk': 'order_data.order_line.product_code',
+            'pk': 'order_data.order_line.product_code',
             
-            # Weight fields - order matters!
-            'bruto': 'qty_brutto',
-            'gross': 'qty_brutto',
-            'tara': 'qty_tara',
-            'tare': 'qty_tara',
-            'netto': 'qty_netto',
-            'net': 'qty_netto',
-            'nett': 'qty_netto',
+            # Weight fields - order matters for specificity!
+            'bruto': 'order_data.order_line.qty_brutto',
+            'gross': 'order_data.order_line.qty_brutto',
+            'tara': 'order_data.order_line.qty_tara',
+            'tare': 'order_data.order_line.qty_tara',
+            'netto': 'order_data.order_line.qty_netto',
+            'net': 'order_data.order_line.qty_netto',
+            'nett': 'order_data.order_line.qty_netto',
+            'aktual': 'order_data.order_line.qty_netto',
             
             # Unit fields
-            'unit': 'product_uom',
-            'uom': 'product_uom',
-            'satuan': 'product_uom',
+            'unit': 'order_data.order_line.product_uom',
+            'uom': 'order_data.order_line.product_uom',
+            'satuan': 'order_data.order_line.product_uom',
             
             # Price fields
-            'price': 'price_unit',
-            'harga': 'price_unit',
-            'rate': 'price_unit',
+            'price': 'order_data.order_line.price_unit',
+            'harga': 'order_data.order_line.price_unit',
+            'rate': 'order_data.order_line.price_unit',
             
             # Quantity fields
-            'qty': 'product_qty',
-            'quantity': 'product_qty',
-            'jumlah': 'product_qty',
+            'qty': 'order_data.order_line.product_qty',
+            'quantity': 'order_data.order_line.product_qty',
+            'jumlah': 'order_data.order_line.product_qty',
         }
         
         mapped_count = 0
@@ -9823,6 +9829,13 @@ Supported formats:
         if mode == "tbs_auto":
             # Auto-setup TBS nested structure
             self.setup_tbs_nested_structure()
+            # Auto-load TBS API fields
+            self.auto_load_tbs_api_fields()
+            # Set source as TBS
+            self.api_fields_source = "manual_tbs_receiving"
+            # Auto-map fields
+            if hasattr(self, 'mapping_widgets') and hasattr(self, 'table_columns'):
+                self.auto_map_tbs_fields()
         elif mode == "nested":
             # Enable nested mapping controls
             self.update_nested_mapping_display()
@@ -9954,6 +9967,49 @@ Supported formats:
         # This would update the UI to show nested groups
         # Implementation depends on the current UI structure
         pass
+    
+    def auto_load_tbs_api_fields(self):
+        """Auto-load TBS API fields when TBS mode is selected"""
+        tbs_fields = [
+            "# === ROOT LEVEL FIELDS ===",
+            "uuid",
+            "timestamp", 
+            "source",
+            "",
+            "# === ORDER_DATA LEVEL FIELDS ===",
+            "order_data.partner_id",
+            "order_data.journal_id", 
+            "order_data.date_order",
+            "order_data.officers",
+            "order_data.keterangan_description",
+            "order_data.driver_name",
+            "order_data.vehicle_no",
+            "order_data.destination_warehouse_id",
+            "order_data.branch_id",
+            "",
+            "# === ORDER_LINE LEVEL FIELDS (nested in order_data) ===",
+            "order_data.order_line.product_code",
+            "order_data.order_line.qty_brutto",
+            "order_data.order_line.qty_tara", 
+            "order_data.order_line.qty_netto",
+            "order_data.order_line.product_uom",
+            "order_data.order_line.sortation_percent",
+            "order_data.order_line.sortation_weight",
+            "order_data.order_line.qty_netto2",
+            "order_data.order_line.price_unit",
+            "order_data.order_line.product_qty",
+            "order_data.order_line.incoming_date",
+            "order_data.order_line.outgoing_date"
+        ]
+        
+        # Filter out comments and empty lines for actual fields
+        self.api_fields = [field for field in tbs_fields if field and not field.startswith("#")]
+        self.api_fields_source = "manual_tbs_receiving"
+        
+        # Update the comboboxes
+        self.update_mapping_comboboxes()
+        
+        self.log_entry(f"Auto-loaded {len(self.api_fields)} TBS API fields", "INFO")
     
     def map_selected_field(self):
         """Map selected database field to API field"""
