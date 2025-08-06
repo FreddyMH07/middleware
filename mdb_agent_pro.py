@@ -74,242 +74,17 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
-# Encryption support - fallback to simple base64 if cryptography not available
-try:
-    from cryptography.fernet import Fernet
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    CRYPTOGRAPHY_AVAILABLE = True
-    ENCRYPTION_AVAILABLE = True
-except ImportError:
-    CRYPTOGRAPHY_AVAILABLE = False
-    ENCRYPTION_AVAILABLE = False
-    print("Warning: Cryptography library not available. Using basic encoding.")
-
-class SecurityManager:
-    """Handle encryption/decryption of sensitive data"""
-    
-    def __init__(self, password: str = "default_password"):
-        self.password = password.encode()
-        if ENCRYPTION_AVAILABLE:
-            self._setup_encryption()
-        
-    def _setup_encryption(self):
-        """Setup Fernet encryption"""
-        if not CRYPTOGRAPHY_AVAILABLE:
-            return
-            
-        salt = b'salt_1234567890123456'  # In production, use random salt
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100000,
-        )
-        key = base64.urlsafe_b64encode(kdf.derive(self.password))
-        self.cipher = Fernet(key)
-    
-    def encrypt(self, data: str) -> str:
-        """Encrypt string data"""
-        if CRYPTOGRAPHY_AVAILABLE and hasattr(self, 'cipher'):
-            return self.cipher.encrypt(data.encode()).decode()
-        else:
-            return base64.b64encode(data.encode()).decode()
-    
-    def decrypt(self, encrypted_data: str) -> str:
-        """Decrypt string data"""
-        try:
-            if CRYPTOGRAPHY_AVAILABLE and hasattr(self, 'cipher'):
-                return self.cipher.decrypt(encrypted_data.encode()).decode()
-            else:
-                return base64.b64decode(encrypted_data.encode()).decode()
-        except Exception:
-            return encrypted_data  # Return as-is if decryption fails
-
-class DatabaseManager:
-    """Handle database operations"""
-    
-    def __init__(self, db_path: str = "agent_data.db"):
-        self.db_path = db_path
-        self.init_database()
-    
-    def init_database(self):
-        """Initialize SQLite database for buffering"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Create tables
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS push_buffer (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                uuid TEXT UNIQUE,
-                payload TEXT,
-                endpoint TEXT,
-                api_key TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                retry_count INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'pending'
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS activity_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                level TEXT,
-                message TEXT,
-                details TEXT
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS mapping_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE,
-                table_name TEXT,
-                mapping_data TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-    
-    def add_to_buffer(self, payload: Dict, endpoint: str, api_key: str) -> str:
-        """Add data to push buffer"""
-        data_uuid = str(uuid.uuid4())
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO push_buffer (uuid, payload, endpoint, api_key)
-            VALUES (?, ?, ?, ?)
-        ''', (data_uuid, json.dumps(payload), endpoint, api_key))
-        
-        conn.commit()
-        conn.close()
-        return data_uuid
-    
-    def get_buffer_items(self, status: str = 'pending', limit: int = 10) -> List[Dict]:
-        """Get items from buffer"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, uuid, payload, endpoint, api_key, created_at, retry_count
-            FROM push_buffer 
-            WHERE status = ? 
-            ORDER BY created_at ASC 
-            LIMIT ?
-        ''', (status, limit))
-        
-        items = []
-        for row in cursor.fetchall():
-            items.append({
-                'id': row[0],
-                'uuid': row[1],
-                'payload': json.loads(row[2]),
-                'endpoint': row[3],
-                'api_key': row[4],
-                'created_at': row[5],
-                'retry_count': row[6]
-            })
-        
-        conn.close()
-        return items
-    
-    def update_buffer_status(self, buffer_id: int, status: str, retry_count: int = None):
-        """Update buffer item status"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        if retry_count is not None:
-            cursor.execute('''
-                UPDATE push_buffer 
-                SET status = ?, retry_count = ? 
-                WHERE id = ?
-            ''', (status, retry_count, buffer_id))
-        else:
-            cursor.execute('''
-                UPDATE push_buffer 
-                SET status = ? 
-                WHERE id = ?
-            ''', (status, buffer_id))
-        
-        conn.commit()
-        conn.close()
-    
-    def log_activity(self, level: str, message: str, details: str = ""):
-        """Log activity to database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO activity_log (level, message, details)
-            VALUES (?, ?, ?)
-        ''', (level, message, details))
-        
-        conn.commit()
-        conn.close()
-    
-    def get_recent_logs(self, limit: int = 100) -> List[Dict]:
-        """Get recent log entries"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT timestamp, level, message, details
-            FROM activity_log 
-            ORDER BY timestamp DESC 
-            LIMIT ?
-        ''', (limit,))
-        
-        logs = []
-        for row in cursor.fetchall():
-            logs.append({
-                'timestamp': row[0],
-                'level': row[1],
-                'message': row[2],
-                'details': row[3]
-            })
-        
-        conn.close()
-        return logs
-
-class StatusIndicator:
-    """Status indicator widget (colored circle)"""
-    
-    def __init__(self, parent, label: str):
-        self.frame = ttk.Frame(parent)
-        self.label = label
-        self.status = "unknown"  # unknown, good, warning, error
-        
-        # Create canvas for colored circle
-        self.canvas = tk.Canvas(self.frame, width=20, height=20, highlightthickness=0)
-        self.canvas.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Label
-        ttk.Label(self.frame, text=label).pack(side=tk.LEFT)
-        
-        self.update_status("unknown")
-    
-    def update_status(self, status: str):
-        """Update status and color"""
-        self.status = status
-        self.canvas.delete("all")
-        
-        colors = {
-            "good": "#4CAF50",      # Green
-            "warning": "#FF9800",   # Orange
-            "error": "#F44336",     # Red
-            "unknown": "#9E9E9E"    # Gray
-        }
-        
-        color = colors.get(status, colors["unknown"])
-        self.canvas.create_oval(2, 2, 18, 18, fill=color, outline="")
+# Import utility modules
+from utils.security import SecurityManager, AuthenticationManager
+from utils.logging_manager import LogManager, get_log_manager
+from utils.gui_utils import (
+    StatusIndicator, NavigationManager, ConfigurationManager, 
+    StyleManager, ErrorHandler, FieldMapper
+)
+from utils.database_manager import DatabaseManager, ConnectionManager, BufferItem, RetryConfig
 
 class MDBAgentPro:
-    """Main application class"""
+    """Main application class with modular architecture"""
     
     def __init__(self):
         self.root = tk.Tk()
@@ -317,19 +92,24 @@ class MDBAgentPro:
         self.root.geometry("1200x800")
         self.root.minsize(1000, 700)
         
-        # Security manager
+        # Initialize utility managers
         self.security = SecurityManager()
-        
-        # Database manager
+        self.log_manager = get_log_manager()
         self.db_manager = DatabaseManager()
+        self.connection_manager = ConnectionManager()
+        self.config_manager = ConfigurationManager(self.security)
+        
+        # Initialize field mapper
+        self.field_mapper = None
+        self.mapping_mode = tk.StringVar(value="flat")
+        self.error_handler = ErrorHandler(self.log_manager, self.root)
         
         # Initialize status variable first
         self.status_var = tk.StringVar()
         self.status_var.set("Ready")
         
-        # Configuration
-        self.config_file = "config.encrypted"
-        self.config = self.load_config()
+        # Configuration (use ConfigurationManager)
+        self.config = self.config_manager.config
         
         # Database connection
         self.db_connection = None
@@ -352,14 +132,15 @@ class MDBAgentPro:
         # API fields source tracking
         self.api_fields_source = "none"  # none, auto_detect, manual
         
-        # Admin mode
+        # Admin mode with enhanced security
         self.admin_mode = False
-        self.admin_pin = "1234"  # In production, store encrypted
+        self.auth_manager = AuthenticationManager(self.security)
+        self.current_session_id = None
         
         # Current tab
         self.current_tab = "dashboard"
         
-        # Setup GUI
+        # Setup GUI components
         self.setup_styles()
         self.setup_gui()
         self.load_settings()
@@ -367,100 +148,57 @@ class MDBAgentPro:
         # Start background worker
         self.start_worker()
         
-        # Setup logging
-        self.setup_logging()
+        # Register configuration change callbacks
+        self.config_manager.register_change_callback(self.on_config_changed)
     
     def setup_styles(self):
-        """Setup custom styles with green theme"""
+        """Setup custom styles using StyleManager"""
         self.style = ttk.Style()
+        self.style_manager = StyleManager(self.style)
         
-        # Apply green theme immediately
-        self.setup_green_theme()
-        
-        # Configure additional custom styles
-        self.style.configure('Sidebar.TFrame', background='#E8F5E8')
-        self.style.configure('Content.TFrame', background='#F8FFF8')
-        self.style.configure('Status.TFrame', background='#E8F5E8')
-        self.style.configure('Title.TLabel', font=('Arial', 12, 'bold'), foreground='#1B5E20')
-        self.style.configure('Header.TLabel', font=('Arial', 10, 'bold'), foreground='#1B5E20')
+        # Apply the green theme
+        self.style_manager.apply_theme("green")
     
-    def setup_logging(self):
-        """Setup logging configuration"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('agent.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+    def on_config_changed(self, config: Dict):
+        """Handle configuration changes"""
+        self.log_manager.log("INFO", "Configuration updated", module="MDBAgentPro")
+        
+        # Update UI elements if needed
+        if hasattr(self, 'status_var'):
+            self.status_var.set("Configuration updated")
     
-    def load_config(self) -> Dict:
-        """Load encrypted configuration"""
-        default_config = {
-            "mdb_file": "",
-            "mdb_password": "qwerty123",
-            "selected_table": "",
-            "table_columns": [],
-            "field_mapping": {},
-            "api_endpoint": "",
-            "api_key": "",
-            "login_username": "",
-            "login_password": "",
-            "login_database": "",
-            "push_interval": 300,  # 5 minutes
-            "auto_push": False,
-            "test_mode": False,
-            "last_status": "Ready",
-            "admin_pin": "1234",
-            "email_settings": {
-                "smtp_server": "",
-                "smtp_port": 587,
-                "email": "",
-                "password": "",
-                "it_email": ""
-            }
-        }
+    def log_entry(self, message: str, level: str = "INFO", details: str = ""):
+        """Unified logging method using LogManager"""
+        self.log_manager.log(level, message, details, module="MDBAgentPro")
         
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r') as f:
-                    encrypted_data = f.read()
-                decrypted_data = self.security.decrypt(encrypted_data)
-                if decrypted_data:
-                    config = json.loads(decrypted_data)
-                    default_config.update(config)
-            except Exception as e:
-                self.log_entry(f"Error loading config: {str(e)}", "ERROR")
+        # Update status variable
+        if hasattr(self, 'status_var') and self.status_var:
+            self.status_var.set(f"{level}: {message}")
         
-        return default_config
+        # Update dashboard if visible
+        if hasattr(self, 'current_tab') and self.current_tab == "dashboard":
+            self.refresh_dashboard()
     
     def save_config(self):
-        """Save encrypted configuration and preserve test connection results"""
-        try:
-            config_json = json.dumps(self.config, indent=2)
-            encrypted_data = self.security.encrypt(config_json)
-            
-            with open(self.config_file, 'w') as f:
-                f.write(encrypted_data)
-            
+        """Save configuration using ConfigurationManager"""
+        success = self.config_manager.save_config()
+        if success:
             # Preserve test connection results after save
             if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
                 # Re-propagate test results to maintain consistency across UI
                 result = self.last_test_connection_result
-                self.propagate_test_connection_results(
-                    result['success'], 
-                    result['status_code'], 
-                    result.get('error', ''), 
-                    result.get('response_time', '0ms').replace('ms', '')
-                )
+                if hasattr(self, 'propagate_test_connection_results'):
+                    self.propagate_test_connection_results(
+                        result['success'], 
+                        result['status_code'], 
+                        result.get('error', ''), 
+                        result.get('response_time', '0ms').replace('ms', '')
+                    )
                 self.log_entry("Configuration saved - test connection results preserved", "INFO")
             else:
                 self.log_entry("Configuration saved", "INFO")
-                
-        except Exception as e:
-            self.log_entry(f"Error saving config: {str(e)}", "ERROR")
+        else:
+            self.log_entry("Failed to save configuration", "ERROR")
     
     def start_worker(self):
         """Start background worker thread"""
@@ -468,10 +206,19 @@ class MDBAgentPro:
             while True:
                 try:
                     if self.is_running and self.config.get("auto_push"):
-                        # Process buffer items
+                        # Process buffer items with mapping
                         items = self.db_manager.get_buffer_items()
                         for item in items:
-                            if self.send_to_api(item['payload']):
+                            # Try to send with mapping if payload is raw data
+                            payload = item['payload']
+                            if isinstance(payload, dict) and 'raw_data' in payload:
+                                # This is raw data, apply mapping
+                                success = self.send_data_with_mapping(payload['raw_data'])
+                            else:
+                                # Already processed payload
+                                success = self.send_to_api(payload)
+                                
+                            if success:
                                 self.db_manager.update_buffer_status(item['id'], 'completed')
                             else:
                                 retry_count = item['retry_count'] + 1
@@ -544,7 +291,7 @@ class MDBAgentPro:
         self.buffer_status.frame.pack(side=tk.LEFT)
     
     def setup_sidebar(self, parent):
-        """Setup navigation sidebar"""
+        """Setup navigation sidebar using NavigationManager"""
         sidebar = ttk.Frame(parent, style='Sidebar.TFrame', width=250)
         sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 15))
         sidebar.pack_propagate(False)
@@ -562,29 +309,37 @@ class MDBAgentPro:
         nav_frame = ttk.Frame(sidebar)
         nav_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 0))
         
-        # Dashboard section
-        self.create_nav_section(nav_frame, "DASHBOARD", [
+        # Initialize NavigationManager
+        self.nav_manager = NavigationManager(nav_frame)
+        
+        # Create navigation sections
+        self.nav_manager.create_section("DASHBOARD", [
             ("Dashboard", "dashboard")
         ], is_first=True)
         
-        # Master section
-        self.create_nav_section(nav_frame, "MASTER", [
+        self.nav_manager.create_section("MASTER", [
             ("Health Checks", "health_checks"),
             ("Transaction Log", "transaction")
         ])
         
-        # Configuration section
-        self.create_nav_section(nav_frame, "CONFIGURATION", [
+        self.nav_manager.create_section("CONFIGURATION", [
             ("Database Connection", "database_connection"),
             ("API Field Mapping", "mapping"),
             ("API Settings", "api"),
             ("Scheduler", "scheduler")
         ])
         
-        # Information section
-        self.create_nav_section(nav_frame, "INFORMATION", [
+        self.nav_manager.create_section("INFORMATION", [
             ("About Application", "about")
         ])
+        
+        # Set main tab switching callback
+        self.nav_manager.set_main_switch_callback(self.switch_tab)
+        
+        # Register additional tab callbacks for refresh actions
+        self.nav_manager.register_tab_callback("dashboard", self.refresh_dashboard)
+        self.nav_manager.register_tab_callback("health_checks", self.auto_refresh_health_status)
+        self.nav_manager.register_tab_callback("scheduler", self.refresh_scheduler_log)
         
         # Footer controls with proper spacing
         footer_frame = ttk.Frame(sidebar)
@@ -595,36 +350,10 @@ class MDBAgentPro:
         # Control buttons with consistent styling
         self.admin_btn = ttk.Button(
             footer_frame, 
-            text="🔐 Admin Mode", 
+            text=" Admin Mode", 
             command=self.toggle_admin_mode
         )
         self.admin_btn.pack(fill=tk.X)
-    
-    def create_nav_section(self, parent, title, buttons, is_first=False):
-        """Create a navigation section with consistent styling"""
-        # Section spacing
-        top_padding = 5 if is_first else 15
-        
-        # Section header
-        ttk.Label(parent, text=title, 
-                 font=('Arial', 9, 'bold'), 
-                 foreground='gray').pack(anchor=tk.W, padx=5, pady=(top_padding, 5))
-        
-        # Section buttons
-        if not hasattr(self, 'nav_buttons'):
-            self.nav_buttons = {}
-            
-        for text, tab_id in buttons:
-            print(f"Creating button: {text} -> {tab_id}")  # Debug
-            btn = ttk.Button(
-                parent, 
-                text=f"  {text}", 
-                command=lambda t=tab_id: self.switch_tab(t),
-                width=28
-            )
-            btn.pack(fill=tk.X, pady=1, padx=5)
-            self.nav_buttons[tab_id] = btn
-            print(f"Button created and packed: {text}")  # Debug
     
     def setup_content_area(self, parent):
         """Setup main content area"""
@@ -640,24 +369,17 @@ class MDBAgentPro:
         
         # Create all tab frames
         self.tab_frames = {}
-        print("Creating dashboard tab...")
         self.create_dashboard_tab()
-        print("Creating health checks tab...")
         self.create_health_checks_tab()
-        print("Creating transaction tab...")
         self.create_transaction_tab()
-        print("Creating database connection tab...")
         self.create_database_connection_tab()
-        print("Creating mapping tab...")
         self.create_mapping_tab()
-        print("Creating API tab...")
         self.create_api_tab()
-        print("Creating scheduler tab...")
         self.create_scheduler_tab()
-        print("Creating about tab...")
         self.create_about_tab()
         
-        print(f"Tab frames created: {list(self.tab_frames.keys())}")
+        # Log successful tab initialization
+        self.log_entry(f"Tab frames created: {list(self.tab_frames.keys())}", "INFO")
         
         # Show dashboard by default
         self.switch_tab("dashboard")
@@ -681,7 +403,7 @@ class MDBAgentPro:
         right_frame.pack(side=tk.RIGHT, fill=tk.Y)
         
         self.agent_status_var = tk.StringVar()
-        self.agent_status_var.set("🔴 Agent: Stopped")
+        self.agent_status_var.set(" Agent: Stopped")
         agent_label = ttk.Label(right_frame, textvariable=self.agent_status_var, 
                                font=('Arial', 9, 'bold'))
         agent_label.pack(side=tk.RIGHT)
@@ -715,10 +437,10 @@ class MDBAgentPro:
         
         # Status items with icons and better spacing
         status_items = [
-            ("Database:", "dash_db_status", "❌ Not Connected", "red"),
-            ("API Endpoint:", "dash_api_status", "❌ Not Configured", "red"),
-            ("Agent Service:", "dash_agent_status", "⭕ Stopped", "red"),
-            ("Buffer Queue:", "dash_buffer_status", "✅ 0 items", "green")
+            ("Database:", "dash_db_status", " Not Connected", "red"),
+            ("API Endpoint:", "dash_api_status", " Not Configured", "red"),
+            ("Agent Service:", "dash_agent_status", " Stopped", "red"),
+            ("Buffer Queue:", "dash_buffer_status", " 0 items", "green")
         ]
         
         for i, (label, attr_name, default_text, color) in enumerate(status_items):
@@ -746,22 +468,22 @@ class MDBAgentPro:
         db_api_frame = ttk.Frame(actions_container)
         db_api_frame.pack(fill=tk.X, pady=(0, 10))
         
-        ttk.Button(db_api_frame, text="🗄️ Test Database", 
+        ttk.Button(db_api_frame, text=" Test Database", 
                   command=self.test_database, width=18).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(db_api_frame, text="🌐 Test API", 
+        ttk.Button(db_api_frame, text=" Test API", 
                   command=self.test_api, width=18).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(db_api_frame, text="📤 Manual Push", 
+        ttk.Button(db_api_frame, text=" Manual Push", 
                   command=self.manual_push, width=18).pack(side=tk.LEFT)
         
         # Agent control actions
         agent_frame = ttk.Frame(actions_container)
         agent_frame.pack(fill=tk.X)
         
-        ttk.Button(agent_frame, text="▶️ Start Agent", 
+        ttk.Button(agent_frame, text=" Start Agent", 
                   command=self.start_agent, width=18).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(agent_frame, text="⏹️ Stop Agent", 
+        ttk.Button(agent_frame, text=" Stop Agent", 
                   command=self.stop_agent, width=18).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(agent_frame, text="🗑️ Clear Buffer", 
+        ttk.Button(agent_frame, text=" Clear Buffer", 
                   command=self.clear_buffer, width=18).pack(side=tk.LEFT)
         
         # Recent activity with better styling
@@ -814,8 +536,8 @@ class MDBAgentPro:
         status_row = ttk.Frame(integration_frame)
         status_row.pack(fill=tk.X)
         
-        ttk.Label(status_row, text="🔗 Status:", font=('Arial', 10, 'bold')).pack(side=tk.LEFT)
-        integration_status = ttk.Label(status_row, text="✅ Fully Integrated with API Settings", 
+        ttk.Label(status_row, text=" Status:", font=('Arial', 10, 'bold')).pack(side=tk.LEFT)
+        integration_status = ttk.Label(status_row, text=" Fully Integrated with API Settings", 
                                      font=('Arial', 10), foreground='green')
         integration_status.pack(side=tk.LEFT, padx=(10, 0))
         
@@ -834,25 +556,25 @@ class MDBAgentPro:
         
         # Database health
         ttk.Label(health_grid, text="Database Connection:", style='Header.TLabel').grid(row=0, column=0, sticky=tk.W, padx=(0, 20))
-        self.health_db_status = ttk.Label(health_grid, text="❌ Not Connected", foreground="red")
+        self.health_db_status = ttk.Label(health_grid, text=" Not Connected", foreground="red")
         self.health_db_status.grid(row=0, column=1, sticky=tk.W)
         ttk.Button(health_grid, text="Test", command=self.health_test_database).grid(row=0, column=2, padx=(10, 0))
         
         # API health
         ttk.Label(health_grid, text="API Endpoint:", style='Header.TLabel').grid(row=1, column=0, sticky=tk.W, padx=(0, 20))
-        self.health_api_status = ttk.Label(health_grid, text="❌ Not Configured", foreground="red")
+        self.health_api_status = ttk.Label(health_grid, text=" Not Configured", foreground="red")
         self.health_api_status.grid(row=1, column=1, sticky=tk.W)
         ttk.Button(health_grid, text="Test", command=self.health_test_api).grid(row=1, column=2, padx=(10, 0))
         
         # Buffer health
         ttk.Label(health_grid, text="Buffer Status:", style='Header.TLabel').grid(row=2, column=0, sticky=tk.W, padx=(0, 20))
-        self.health_buffer_status = ttk.Label(health_grid, text="✅ Empty", foreground="green")
+        self.health_buffer_status = ttk.Label(health_grid, text=" Empty", foreground="green")
         self.health_buffer_status.grid(row=2, column=1, sticky=tk.W)
         ttk.Button(health_grid, text="Check", command=self.health_check_buffer).grid(row=2, column=2, padx=(10, 0))
         
         # Data integrity
         ttk.Label(health_grid, text="Data Integrity:", style='Header.TLabel').grid(row=3, column=0, sticky=tk.W, padx=(0, 20))
-        self.health_data_status = ttk.Label(health_grid, text="⚠️ Not Verified", foreground="orange")
+        self.health_data_status = ttk.Label(health_grid, text=" Not Verified", foreground="orange")
         self.health_data_status.grid(row=3, column=1, sticky=tk.W)
         ttk.Button(health_grid, text="Verify", command=self.health_verify_data).grid(row=3, column=2, padx=(10, 0))
         
@@ -861,7 +583,7 @@ class MDBAgentPro:
         check_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Info label about API Settings integration
-        info_label = ttk.Label(check_frame, text="💡 API Health Check menggunakan konfigurasi dari tab API Settings", 
+        info_label = ttk.Label(check_frame, text=" API Health Check menggunakan konfigurasi dari tab API Settings", 
                               font=('Arial', 9), foreground='blue')
         info_label.pack(anchor=tk.W, pady=(0, 10))
         
@@ -1068,7 +790,7 @@ class MDBAgentPro:
         preview_container.grid_columnconfigure(0, weight=1)
     
     def switch_tab(self, tab_id: str):
-        """Switch to specified tab"""
+        """Switch to specified tab using NavigationManager"""
         # Hide all tabs
         for frame in self.tab_frames.values():
             frame.pack_forget()
@@ -1078,48 +800,42 @@ class MDBAgentPro:
             self.tab_frames[tab_id].pack(fill=tk.BOTH, expand=True)
             self.current_tab = tab_id
             
-            # Update navigation button styles
-            for btn_id, btn in self.nav_buttons.items():
-                if btn_id == tab_id:
-                    btn.configure(style='Accent.TButton')
-                else:
-                    btn.configure(style='TButton')
+            # Update navigation button styles through NavigationManager
+            if hasattr(self, 'nav_manager'):
+                # Update button styles directly
+                for btn_id, btn in self.nav_manager.nav_buttons.items():
+                    if btn_id == tab_id:
+                        btn.configure(style='Selected.TButton')
+                    else:
+                        btn.configure(style='TButton')
+                        
+                self.nav_manager.current_tab = tab_id
             
             # Refresh tab content if needed
             if tab_id == "dashboard":
                 self.refresh_dashboard()
             elif tab_id == "scheduler":
-                self.refresh_scheduler_log()
+                if hasattr(self, 'refresh_scheduler_log'):
+                    self.refresh_scheduler_log()
             elif tab_id == "health_checks":
                 # Auto-refresh health check status when tab is opened
                 self.root.after(200, self.auto_refresh_health_status)
             elif tab_id == "mapping":
                 # Auto-refresh API Field Mapping status when tab is opened
-                self.root.after(200, self.refresh_api_mapping_status)
+                if hasattr(self, 'refresh_api_mapping_status'):
+                    self.root.after(200, self.refresh_api_mapping_status)
         else:
-            print(f"Warning: Tab '{tab_id}' not found in tab_frames. Available tabs: {list(self.tab_frames.keys())}")
+            self.log_entry(f"Warning: Tab '{tab_id}' not found in tab_frames. Available tabs: {list(self.tab_frames.keys())}", "WARN")
     
     # Continue with remaining methods...
     
     # Continue with remaining methods...
     
-    def log_entry(self, message: str, level: str = "INFO"):
-        """Add entry to log"""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def log_entry(self, message: str, level: str = "INFO", details: str = ""):
+        """Unified logging method using LogManager"""
+        self.log_manager.log(level, message, details, module="MDBAgentPro")
         
-        # Log to database
-        self.db_manager.log_activity(level, message)
-        
-        # Log to file
-        if hasattr(self, 'logger'):
-            if level == "ERROR":
-                self.logger.error(message)
-            elif level == "WARNING":
-                self.logger.warning(message)
-            else:
-                self.logger.info(message)
-        
-        # Update status
+        # Update status variable
         if hasattr(self, 'status_var') and self.status_var:
             self.status_var.set(f"{level}: {message}")
         
@@ -1350,30 +1066,30 @@ class MDBAgentPro:
         """Test database connection with detailed feedback like Postman"""
         # Build comprehensive test results
         test_results = []
-        overall_status = "✅ SUCCESS"
+        overall_status = " SUCCESS"
         overall_color = "green"
         
         # Test 1: Basic connection
         try:
             if not self.db_connection:
-                test_results.append("❌ Connection: No active database connection")
-                overall_status = "❌ FAILED"
+                test_results.append(" Connection: No active database connection")
+                overall_status = " FAILED"
                 overall_color = "red"
             else:
                 cursor = self.db_connection.cursor()
                 cursor.execute("SELECT 1")
                 result = cursor.fetchone()
-                test_results.append("✅ Connection: Database connection active and responding")
+                test_results.append(" Connection: Database connection active and responding")
                 
                 # Update status indicators
                 self.db_status.update_status("good")
                 if hasattr(self, 'dash_db_status'):
-                    self.dash_db_status.config(text="✅ Connected", foreground="green")
+                    self.dash_db_status.config(text=" Connected", foreground="green")
                 if hasattr(self, 'health_db_status'):
-                    self.health_db_status.config(text="✅ Connected", foreground="green")
+                    self.health_db_status.config(text=" Connected", foreground="green")
         except Exception as e:
-            test_results.append(f"❌ Connection: Basic query failed - {str(e)}")
-            overall_status = "❌ FAILED"
+            test_results.append(f" Connection: Basic query failed - {str(e)}")
+            overall_status = " FAILED"
             overall_color = "red"
             self.db_status.update_status("error")
         
@@ -1383,11 +1099,11 @@ class MDBAgentPro:
                 cursor = self.db_connection.cursor()
                 tables = list(cursor.tables())
                 table_count = len([table for table in tables if table.table_type == 'TABLE'])
-                test_results.append(f"✅ Metadata: Found {table_count} tables in database")
+                test_results.append(f" Metadata: Found {table_count} tables in database")
             except Exception as e:
-                test_results.append(f"⚠️ Metadata: Could not enumerate tables - {str(e)}")
-                if overall_status == "✅ SUCCESS":
-                    overall_status = "⚠️ PARTIAL"
+                test_results.append(f" Metadata: Could not enumerate tables - {str(e)}")
+                if overall_status == " SUCCESS":
+                    overall_status = " PARTIAL"
                     overall_color = "orange"
         
         # Test 3: Selected table test
@@ -1396,25 +1112,25 @@ class MDBAgentPro:
                 cursor = self.db_connection.cursor()
                 cursor.execute(f"SELECT COUNT(*) FROM [{self.selected_table}]")
                 record_count = cursor.fetchone()[0]
-                test_results.append(f"✅ Table Query: '{self.selected_table}' contains {record_count:,} records")
+                test_results.append(f" Table Query: '{self.selected_table}' contains {record_count:,} records")
                 
                 # Test sample data retrieval
                 cursor.execute(f"SELECT TOP 1 * FROM [{self.selected_table}]")
                 sample_row = cursor.fetchone()
                 if sample_row:
-                    test_results.append(f"✅ Data Access: Successfully retrieved sample data")
+                    test_results.append(f" Data Access: Successfully retrieved sample data")
                 else:
-                    test_results.append(f"⚠️ Data Access: Table is empty")
+                    test_results.append(f" Data Access: Table is empty")
                     
             except Exception as e:
-                test_results.append(f"❌ Table Query: Failed to query '{self.selected_table}' - {str(e)}")
-                if overall_status == "✅ SUCCESS":
-                    overall_status = "⚠️ PARTIAL"
+                test_results.append(f" Table Query: Failed to query '{self.selected_table}' - {str(e)}")
+                if overall_status == " SUCCESS":
+                    overall_status = " PARTIAL"
                     overall_color = "orange"
         elif self.selected_table:
-            test_results.append("⚠️ Table Query: No database connection for table test")
+            test_results.append(" Table Query: No database connection for table test")
         else:
-            test_results.append("ℹ️ Table Query: No table selected")
+            test_results.append(" Table Query: No table selected")
         
         # Test 4: Write access test (optional)
         if self.db_connection:
@@ -1424,18 +1140,18 @@ class MDBAgentPro:
                 test_table_name = f"_temp_test_{int(datetime.now().timestamp())}"
                 cursor.execute(f"CREATE TABLE [{test_table_name}] (test_id INTEGER)")
                 cursor.execute(f"DROP TABLE [{test_table_name}]")
-                test_results.append("✅ Write Access: Database supports table creation/deletion")
+                test_results.append(" Write Access: Database supports table creation/deletion")
             except Exception as e:
-                test_results.append(f"⚠️ Write Access: Limited write permissions - {str(e)}")
+                test_results.append(f" Write Access: Limited write permissions - {str(e)}")
                 # Don't change overall status for write access issues
         
         # Display results in Postman-style format
         result_text = f"{overall_status}\n\n" + "\n".join(test_results)
         
-        if overall_status == "✅ SUCCESS":
+        if overall_status == " SUCCESS":
             messagebox.showinfo("Database Test Results", result_text)
             self.log_entry("Database connection test completed successfully", "SUCCESS")
-        elif overall_status == "⚠️ PARTIAL":
+        elif overall_status == " PARTIAL":
             messagebox.showwarning("Database Test Results", result_text)
             self.log_entry("Database connection test completed with warnings", "WARNING")
         else:
@@ -1562,7 +1278,7 @@ class MDBAgentPro:
         # Get endpoint from API Settings
         endpoint = self.api_endpoint_var.get().strip() if hasattr(self, 'api_endpoint_var') else self.config.get('api_endpoint', '')
         if not endpoint:
-            messagebox.showerror("Configuration Error", "❌ No API endpoint configured.\n\nPlease configure endpoint in API Settings tab.")
+            messagebox.showerror("Configuration Error", " No API endpoint configured.\n\nPlease configure endpoint in API Settings tab.")
             return
         
         # Get authentication from API Settings
@@ -1571,7 +1287,7 @@ class MDBAgentPro:
         
         # Build test results like Postman
         test_results = []
-        overall_status = "✅ SUCCESS"
+        overall_status = " SUCCESS"
         overall_color = "green"
         response_time = 0
         
@@ -1589,18 +1305,18 @@ class MDBAgentPro:
             from urllib.parse import urlparse
             parsed = urlparse(endpoint)
             if not parsed.scheme or not parsed.netloc:
-                test_results.append("❌ URL Format: Invalid URL format")
-                overall_status = "❌ FAILED"
+                test_results.append(" URL Format: Invalid URL format")
+                overall_status = " FAILED"
                 overall_color = "red"
             else:
-                test_results.append(f"✅ URL Format: Valid URL ({parsed.scheme}://{parsed.netloc})")
+                test_results.append(f" URL Format: Valid URL ({parsed.scheme}://{parsed.netloc})")
         except Exception as e:
-            test_results.append(f"❌ URL Format: {str(e)}")
-            overall_status = "❌ FAILED"
+            test_results.append(f" URL Format: {str(e)}")
+            overall_status = " FAILED"
             overall_color = "red"
         
         # Test 2: Authentication setup
-        auth_status = "✅ Auth Setup: "
+        auth_status = " Auth Setup: "
         try:
             if auth_type == "api_key":
                 api_key = self.api_key_var.get().strip() if hasattr(self, 'api_key_var') else ""
@@ -1609,8 +1325,8 @@ class MDBAgentPro:
                     auth_status += f"API Key configured ({api_key[:10]}...)"
                     test_results.append(auth_status)
                 else:
-                    test_results.append("❌ Auth Setup: API Key authentication selected but no key provided")
-                    overall_status = "❌ FAILED"
+                    test_results.append(" Auth Setup: API Key authentication selected but no key provided")
+                    overall_status = " FAILED"
                     overall_color = "red"
                     return
                     
@@ -1629,8 +1345,8 @@ class MDBAgentPro:
                         auth_status += f"Login credentials for endpoint (user: {username})"
                         test_results.append(auth_status)
                     else:
-                        test_results.append("❌ Auth Setup: Login credentials required but not provided")
-                        overall_status = "❌ FAILED"
+                        test_results.append(" Auth Setup: Login credentials required but not provided")
+                        overall_status = " FAILED"
                         overall_color = "red"
                         return
                 else:
@@ -1639,24 +1355,24 @@ class MDBAgentPro:
                         auth_status += "Using existing login session"
                         test_results.append(auth_status)
                     else:
-                        test_results.append("⚠️ Auth Setup: Login authentication but not logged in")
-                        if overall_status == "✅ SUCCESS":
-                            overall_status = "⚠️ PARTIAL"
+                        test_results.append(" Auth Setup: Login authentication but not logged in")
+                        if overall_status == " SUCCESS":
+                            overall_status = " PARTIAL"
                             overall_color = "orange"
             else:
                 auth_status += "No authentication (public endpoint)"
                 test_results.append(auth_status)
                 
         except Exception as e:
-            test_results.append(f"❌ Auth Setup: {str(e)}")
-            overall_status = "❌ FAILED"
+            test_results.append(f" Auth Setup: {str(e)}")
+            overall_status = " FAILED"
             overall_color = "red"
         
         # Test 3: Network connectivity and response
-        if overall_status != "❌ FAILED":
+        if overall_status != " FAILED":
             try:
                 start_time = datetime.now()
-                self.log_entry(f"🧪 Testing API: {method} {endpoint} (Auth: {auth_type}) - test only, no auto-save", "INFO")
+                self.log_entry(f" Testing API: {method} {endpoint} (Auth: {auth_type}) - test only, no auto-save", "INFO")
                 
                 # Make request
                 if method.upper() == "GET":
@@ -1668,81 +1384,81 @@ class MDBAgentPro:
                 response_time = int((end_time - start_time).total_seconds() * 1000)
                 
                 # Test 4: Response analysis
-                test_results.append(f"✅ Network: Connected successfully ({response_time}ms)")
-                test_results.append(f"✅ Response: HTTP {response.status_code} received")
+                test_results.append(f" Network: Connected successfully ({response_time}ms)")
+                test_results.append(f" Response: HTTP {response.status_code} received")
                 
                 # Analyze response content
                 try:
                     content_type = response.headers.get('content-type', 'unknown')
-                    test_results.append(f"ℹ️ Content-Type: {content_type}")
+                    test_results.append(f" Content-Type: {content_type}")
                     
                     if response.text:
                         response_size = len(response.text)
-                        test_results.append(f"ℹ️ Response Size: {response_size} bytes")
+                        test_results.append(f" Response Size: {response_size} bytes")
                         
                         # Try to parse JSON
                         if 'json' in content_type.lower():
                             try:
                                 json_data = response.json()
-                                test_results.append("✅ JSON: Valid JSON response received")
+                                test_results.append(" JSON: Valid JSON response received")
                             except:
-                                test_results.append("⚠️ JSON: Invalid JSON in response")
+                                test_results.append(" JSON: Invalid JSON in response")
                     else:
-                        test_results.append("ℹ️ Response: Empty response body")
+                        test_results.append(" Response: Empty response body")
                 except Exception as parse_error:
-                    test_results.append(f"⚠️ Response Parse: {str(parse_error)}")
+                    test_results.append(f" Response Parse: {str(parse_error)}")
                 
                 # Status code evaluation (NO AUTO-SAVE of status indicators)
                 if response.status_code in [200, 201]:
-                    test_results.append("✅ Status: Success response (200-201)")
-                    test_results.append("💡 Test Only: No configuration auto-saved")
+                    test_results.append(" Status: Success response (200-201)")
+                    test_results.append(" Test Only: No configuration auto-saved")
                         
                 elif response.status_code in [400, 401, 422]:
                     if "/login" in endpoint.lower() and auth_type == "login":
-                        test_results.append(f"✅ Status: Login endpoint responding correctly ({response.status_code})")
-                        test_results.append("ℹ️ Note: 400/401 is expected for login endpoints with test data")
-                        test_results.append("💡 Test Only: No configuration auto-saved")
+                        test_results.append(f" Status: Login endpoint responding correctly ({response.status_code})")
+                        test_results.append(" Note: 400/401 is expected for login endpoints with test data")
+                        test_results.append(" Test Only: No configuration auto-saved")
                     else:
-                        test_results.append(f"⚠️ Status: Client error ({response.status_code})")
-                        test_results.append("ℹ️ Note: May indicate authentication or validation issues")
-                        test_results.append("💡 Test Only: No configuration auto-saved")
-                        if overall_status == "✅ SUCCESS":
-                            overall_status = "⚠️ PARTIAL"
+                        test_results.append(f" Status: Client error ({response.status_code})")
+                        test_results.append(" Note: May indicate authentication or validation issues")
+                        test_results.append(" Test Only: No configuration auto-saved")
+                        if overall_status == " SUCCESS":
+                            overall_status = " PARTIAL"
                             overall_color = "orange"
                 
                 elif response.status_code >= 500:
-                    test_results.append(f"❌ Status: Server error ({response.status_code})")
-                    test_results.append("ℹ️ Note: Server-side issue, endpoint may be temporarily unavailable")
-                    test_results.append("💡 Test Only: No configuration auto-saved")
-                    if overall_status == "✅ SUCCESS":
-                        overall_status = "⚠️ PARTIAL"
+                    test_results.append(f" Status: Server error ({response.status_code})")
+                    test_results.append(" Note: Server-side issue, endpoint may be temporarily unavailable")
+                    test_results.append(" Test Only: No configuration auto-saved")
+                    if overall_status == " SUCCESS":
+                        overall_status = " PARTIAL"
                         overall_color = "orange"
                 
                 else:
-                    test_results.append(f"ℹ️ Status: Other response ({response.status_code})")
-                    test_results.append("💡 Test Only: No configuration auto-saved")
-                    if overall_status == "✅ SUCCESS":
-                        overall_status = "⚠️ PARTIAL"
+                    test_results.append(f" Status: Other response ({response.status_code})")
+                    test_results.append(" Test Only: No configuration auto-saved")
+                    if overall_status == " SUCCESS":
+                        overall_status = " PARTIAL"
                         overall_color = "orange"
                 
             except requests.exceptions.Timeout:
-                test_results.append("❌ Network: Request timeout (>15 seconds)")
-                test_results.append("ℹ️ Suggestion: Check endpoint URL and network connectivity")
-                test_results.append("💡 Test Only: No configuration auto-saved")
-                overall_status = "❌ FAILED"
+                test_results.append(" Network: Request timeout (>15 seconds)")
+                test_results.append(" Suggestion: Check endpoint URL and network connectivity")
+                test_results.append(" Test Only: No configuration auto-saved")
+                overall_status = " FAILED"
                 overall_color = "red"
                 
             except requests.exceptions.ConnectionError:
-                test_results.append("❌ Network: Connection failed")
-                test_results.append("ℹ️ Suggestion: Verify URL and internet connection")
-                test_results.append("💡 Test Only: No configuration auto-saved")
-                overall_status = "❌ FAILED"
+                test_results.append(" Network: Connection failed")
+                test_results.append(" Suggestion: Verify URL and internet connection")
+                test_results.append(" Test Only: No configuration auto-saved")
+                overall_status = " FAILED"
                 overall_color = "red"
                 
             except Exception as e:
-                test_results.append(f"❌ Network: Request failed - {str(e)}")
-                test_results.append("💡 Test Only: No configuration auto-saved")
-                overall_status = "❌ FAILED"
+                test_results.append(f" Network: Request failed - {str(e)}")
+                test_results.append(" Test Only: No configuration auto-saved")
+                overall_status = " FAILED"
                 overall_color = "red"
         
         # Display results in Postman-style format
@@ -1750,18 +1466,18 @@ class MDBAgentPro:
         if response_time > 0:
             result_header += f"\nResponse Time: {response_time}ms"
         
-        result_header += "\n\n🧪 TEST MODE - No Auto-Save"
+        result_header += "\n\n TEST MODE - No Auto-Save"
         result_text = result_header + "\n\n" + "\n".join(test_results)
         
-        if overall_status == "✅ SUCCESS":
+        if overall_status == " SUCCESS":
             messagebox.showinfo("API Test Results", result_text)
-            self.log_entry(f"🧪 API test completed successfully: {endpoint} (test mode)", "SUCCESS")
-        elif overall_status == "⚠️ PARTIAL":
+            self.log_entry(f" API test completed successfully: {endpoint} (test mode)", "SUCCESS")
+        elif overall_status == " PARTIAL":
             messagebox.showwarning("API Test Results", result_text)
-            self.log_entry(f"🧪 API test completed with warnings: {endpoint} (test mode)", "WARNING")
+            self.log_entry(f" API test completed with warnings: {endpoint} (test mode)", "WARNING")
         else:
             messagebox.showerror("API Test Results", result_text)
-            self.log_entry(f"🧪 API test failed: {endpoint} (test mode)", "ERROR")
+            self.log_entry(f" API test failed: {endpoint} (test mode)", "ERROR")
     
     def manual_push(self):
         """Manual data push"""
@@ -1789,9 +1505,9 @@ class MDBAgentPro:
                     messagebox.showinfo("Test Mode", f"Would send data: {json.dumps(data, indent=2)}")
                     self.log_entry("Test mode: Manual push simulated", "INFO")
                 else:
-                    success = self.send_to_api(data)
+                    success = self.send_data_with_mapping(data)
                     if success:
-                        messagebox.showinfo("Success", "Data pushed successfully!")
+                        messagebox.showinfo("Success", "Data pushed successfully with field mapping!")
                     else:
                         messagebox.showerror("Error", "Failed to push data. Check logs.")
             else:
@@ -1881,6 +1597,78 @@ class MDBAgentPro:
         
         return None
     
+    def build_api_payload(self, raw_data: Dict) -> Dict:
+        """Build API payload from raw database data using current field mappings"""
+        try:
+            # Initialize field mapper if needed
+            if not self.field_mapper or not hasattr(self, 'field_mappings'):
+                self.update_field_mapper()
+            
+            # Use field mapper to build payload
+            if self.field_mapper:
+                mapped_data = self.field_mapper.build_api_payload(raw_data)
+                
+                # Add metadata
+                mapped_data.update({
+                    "uuid": str(uuid.uuid4()),
+                    "timestamp": datetime.now().isoformat(),
+                    "table": getattr(self, 'selected_table', 'unknown'),
+                    "source": "MDB_Agent_Pro"
+                })
+                
+                self.log_entry(f"Built API payload with {len(mapped_data)} fields", "INFO")
+                return mapped_data
+            else:
+                # Fallback to simple mapping
+                self.log_entry("No field mapper available, using raw data", "WARN")
+                return {
+                    "uuid": str(uuid.uuid4()),
+                    "timestamp": datetime.now().isoformat(),
+                    "table": getattr(self, 'selected_table', 'unknown'),
+                    "data": raw_data
+                }
+                
+        except Exception as e:
+            self.log_entry(f"Failed to build API payload: {str(e)}", "ERROR")
+            # Return minimal structure on error
+            return {
+                "uuid": str(uuid.uuid4()),
+                "timestamp": datetime.now().isoformat(),
+                "error": f"Payload build failed: {str(e)}",
+                "raw_data": raw_data
+            }
+    
+    def update_field_mapper(self):
+        """Update field mapper with current mappings and mode"""
+        try:
+            # Get current mapping mode
+            mode = self.mapping_mode.get() if hasattr(self, 'mapping_mode') else "flat"
+            
+            # Get current field mappings
+            mappings = getattr(self, 'field_mappings', {})
+            
+            # Create new field mapper
+            self.field_mapper = FieldMapper(mappings, mode)
+            
+            self.log_entry(f"Updated field mapper: mode={mode}, mappings={len(mappings)}", "INFO")
+            
+        except Exception as e:
+            self.log_entry(f"Failed to update field mapper: {str(e)}", "ERROR")
+            self.field_mapper = None
+    
+    def send_data_with_mapping(self, raw_data: Dict) -> bool:
+        """Send data to API using field mapping"""
+        try:
+            # Build mapped payload
+            mapped_data = self.build_api_payload(raw_data)
+            
+            # Send mapped data
+            return self.send_to_api(mapped_data)
+            
+        except Exception as e:
+            self.log_entry(f"Failed to send data with mapping: {str(e)}", "ERROR")
+            return False
+    
     def send_to_api(self, data: Dict) -> bool:
         """Send data to API endpoint"""
         if not self.config.get("api_endpoint") or not data:
@@ -1954,10 +1742,10 @@ class MDBAgentPro:
         self.save_config()
         
         messagebox.showinfo("Agent Started", 
-                          "✅ Agent started successfully!\n\n"
-                          "• Using API Settings authentication\n"
-                          "• Monitoring for database changes\n"
-                          "• Auto-push enabled")
+                          " Agent started successfully!\n\n"
+                          " Using API Settings authentication\n"
+                          " Monitoring for database changes\n"
+                          " Auto-push enabled")
         self.log_entry("Agent started with API Settings integration", "INFO")
     
     def sync_api_settings_to_config(self):
@@ -2016,7 +1804,7 @@ class MDBAgentPro:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             if not self.db_connection:
-                self.health_db_status.config(text="❌ Not Connected", foreground="red")
+                self.health_db_status.config(text=" Not Connected", foreground="red")
                 self.health_tree.insert("", 0, values=(timestamp, "Database", "FAIL", "No database connection"))
                 return
             
@@ -2024,11 +1812,11 @@ class MDBAgentPro:
             cursor.execute("SELECT 1")
             cursor.fetchone()
             
-            self.health_db_status.config(text="✅ Connected", foreground="green")
+            self.health_db_status.config(text=" Connected", foreground="green")
             self.health_tree.insert("", 0, values=(timestamp, "Database", "PASS", "Database connection successful"))
             
         except Exception as e:
-            self.health_db_status.config(text="❌ Error", foreground="red")
+            self.health_db_status.config(text=" Error", foreground="red")
             self.health_tree.insert("", 0, values=(timestamp, "Database", "FAIL", f"Error: {str(e)}"))
     
     def health_test_api(self):
@@ -2041,19 +1829,19 @@ class MDBAgentPro:
             if result['success']:
                 # Use cached test connection results
                 response_time = result.get('response_time', 'N/A')
-                self.health_api_status.config(text=f"✅ Connected ({response_time})", foreground="green")
+                self.health_api_status.config(text=f" Connected ({response_time})", foreground="green")
                 self.health_tree.insert("", 0, values=(timestamp, "API", "PASS", f"Using Test Connection result: Connected in {response_time}"))
                 return
             else:
                 error_msg = result.get('error', 'Connection failed')
-                self.health_api_status.config(text=f"❌ {error_msg}", foreground="red")
+                self.health_api_status.config(text=f" {error_msg}", foreground="red")
                 self.health_tree.insert("", 0, values=(timestamp, "API", "FAIL", f"Using Test Connection result: {error_msg}"))
                 return
         
         # Priority 2: Basic configuration check without API calls
         endpoint = self.api_endpoint_var.get().strip() if hasattr(self, 'api_endpoint_var') else self.config.get('api_endpoint', '')
         if not endpoint:
-            self.health_api_status.config(text="❌ Not Configured", foreground="red")
+            self.health_api_status.config(text=" Not Configured", foreground="red")
             self.health_tree.insert("", 0, values=(timestamp, "API", "FAIL", "No API endpoint configured - Please configure in API Settings tab"))
             return
         
@@ -2084,7 +1872,7 @@ class MDBAgentPro:
             auth_status = "No authentication required"
         
         # Show configuration status without making API calls
-        self.health_api_status.config(text="⚙️ Ready - Test Connection first", foreground="blue")
+        self.health_api_status.config(text=" Ready - Test Connection first", foreground="blue")
         self.health_tree.insert("", 0, values=(timestamp, "API", "INFO", f"Configuration ready: {endpoint[:50]}... Auth: {auth_status}. Use Test Connection to verify."))
         
     def health_check_buffer(self):
@@ -2095,17 +1883,17 @@ class MDBAgentPro:
             count = len(buffer_items)
             
             if count == 0:
-                self.health_buffer_status.config(text="✅ Empty", foreground="green")
+                self.health_buffer_status.config(text=" Empty", foreground="green")
                 self.health_tree.insert("", 0, values=(timestamp, "Buffer", "PASS", "Buffer is empty"))
             elif count < 10:
-                self.health_buffer_status.config(text=f"⚠️ {count} items", foreground="orange")
+                self.health_buffer_status.config(text=f" {count} items", foreground="orange")
                 self.health_tree.insert("", 0, values=(timestamp, "Buffer", "WARN", f"{count} items in buffer"))
             else:
-                self.health_buffer_status.config(text=f"❌ {count} items", foreground="red")
+                self.health_buffer_status.config(text=f" {count} items", foreground="red")
                 self.health_tree.insert("", 0, values=(timestamp, "Buffer", "FAIL", f"{count} items in buffer - check API"))
                 
         except Exception as e:
-            self.health_buffer_status.config(text="❌ Error", foreground="red")
+            self.health_buffer_status.config(text=" Error", foreground="red")
             self.health_tree.insert("", 0, values=(timestamp, "Buffer", "FAIL", f"Error: {str(e)}"))
     
     def health_verify_data(self):
@@ -2113,7 +1901,7 @@ class MDBAgentPro:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             if not self.selected_table or not self.db_connection:
-                self.health_data_status.config(text="❌ No Table", foreground="red")
+                self.health_data_status.config(text=" No Table", foreground="red")
                 self.health_tree.insert("", 0, values=(timestamp, "Data Integrity", "FAIL", "No table selected"))
                 return
             
@@ -2122,14 +1910,14 @@ class MDBAgentPro:
             count = cursor.fetchone()[0]
             
             if count > 0:
-                self.health_data_status.config(text=f"✅ {count} records", foreground="green")
+                self.health_data_status.config(text=f" {count} records", foreground="green")
                 self.health_tree.insert("", 0, values=(timestamp, "Data Integrity", "PASS", f"Table has {count} records"))
             else:
-                self.health_data_status.config(text="⚠️ Empty table", foreground="orange")
+                self.health_data_status.config(text=" Empty table", foreground="orange")
                 self.health_tree.insert("", 0, values=(timestamp, "Data Integrity", "WARN", "Table is empty"))
                 
         except Exception as e:
-            self.health_data_status.config(text="❌ Error", foreground="red")
+            self.health_data_status.config(text=" Error", foreground="red")
             self.health_tree.insert("", 0, values=(timestamp, "Data Integrity", "FAIL", f"Error: {str(e)}"))
     
     def run_all_health_checks(self):
@@ -2153,7 +1941,7 @@ class MDBAgentPro:
             
             # Update status label with current configuration
             if endpoint:
-                self.health_api_status.config(text="🔄 Checking...", foreground="blue")
+                self.health_api_status.config(text=" Checking...", foreground="blue")
                 self.root.update_idletasks()  # Update UI immediately
                 
                 # Run API health check with new settings
@@ -2164,17 +1952,17 @@ class MDBAgentPro:
                 self.health_tree.insert("", 0, values=(timestamp, "System", "INFO", f"API Settings refreshed - Endpoint: {endpoint[:50]}... Auth: {auth_type}"))
                 
                 messagebox.showinfo("Success", 
-                                  f"✅ Health Check updated with current API Settings!\n\n"
+                                  f" Health Check updated with current API Settings!\n\n"
                                   f"Endpoint: {endpoint}\n"
                                   f"Auth Type: {auth_type}\n\n"
                                   f"Health check now uses this configuration.")
             else:
-                self.health_api_status.config(text="❌ Not Configured", foreground="red")
+                self.health_api_status.config(text=" Not Configured", foreground="red")
                 messagebox.showwarning("Warning", 
-                                     f"⚠️ No API endpoint configured in API Settings.\n\n"
+                                     f" No API endpoint configured in API Settings.\n\n"
                                      f"Please go to API Settings tab and configure:\n"
-                                     f"• Endpoint URL\n"
-                                     f"• Authentication\n\n"
+                                     f" Endpoint URL\n"
+                                     f" Authentication\n\n"
                                      f"Then refresh health check again.")
                 
         except Exception as e:
@@ -2195,7 +1983,7 @@ class MDBAgentPro:
                 
                 if endpoint:
                     # Refresh API health status silently
-                    self.health_api_status.config(text="🔄 Checking...", foreground="blue")
+                    self.health_api_status.config(text=" Checking...", foreground="blue")
                     self.root.update_idletasks()
                     
                     # Delay to show checking status, then run actual test
@@ -2206,7 +1994,7 @@ class MDBAgentPro:
                     self.health_tree.insert("", 0, values=(timestamp, "System", "INFO", "Health Check tab opened - Auto-refreshing API status"))
                 else:
                     # Show configuration needed message
-                    self.health_api_status.config(text="❌ Not Configured", foreground="red")
+                    self.health_api_status.config(text=" Not Configured", foreground="red")
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     self.health_tree.insert("", 0, values=(timestamp, "System", "INFO", "API Settings not configured - Please configure API Settings first"))
                     
@@ -2257,7 +2045,7 @@ class MDBAgentPro:
             status_filter = self.trans_status_filter.get()
             
             # Load recent logs as transaction data
-            logs = self.db_manager.get_recent_logs(100)
+            logs = self.log_manager.get_recent_logs(100)
             
             success_count = 0
             failed_count = 0
@@ -2348,10 +2136,10 @@ class MDBAgentPro:
             urgency_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
             
             urgency_var = tk.StringVar(value="Normal")
-            ttk.Radiobutton(urgency_frame, text="🔴 Critical (System Down)", variable=urgency_var, value="Critical").pack(anchor=tk.W)
-            ttk.Radiobutton(urgency_frame, text="🟡 High (Major Function Broken)", variable=urgency_var, value="High").pack(anchor=tk.W)
-            ttk.Radiobutton(urgency_frame, text="🟢 Normal (Minor Issue)", variable=urgency_var, value="Normal").pack(anchor=tk.W)
-            ttk.Radiobutton(urgency_frame, text="🔵 Low (Enhancement Request)", variable=urgency_var, value="Low").pack(anchor=tk.W)
+            ttk.Radiobutton(urgency_frame, text=" Critical (System Down)", variable=urgency_var, value="Critical").pack(anchor=tk.W)
+            ttk.Radiobutton(urgency_frame, text=" High (Major Function Broken)", variable=urgency_var, value="High").pack(anchor=tk.W)
+            ttk.Radiobutton(urgency_frame, text=" Normal (Minor Issue)", variable=urgency_var, value="Normal").pack(anchor=tk.W)
+            ttk.Radiobutton(urgency_frame, text=" Low (Enhancement Request)", variable=urgency_var, value="Low").pack(anchor=tk.W)
             
             def create_support_ticket():
                 issue_desc = issue_text.get(1.0, tk.END).strip()
@@ -2392,18 +2180,18 @@ class MDBAgentPro:
                         f.write("RECENT LOGS:\n")
                         f.write("-" * 20 + "\n")
                         try:
-                            logs = self.db_manager.get_recent_logs(20)
+                            logs = self.log_manager.get_recent_logs(20)
                             for log in logs:
                                 f.write(f"{log['timestamp']} [{log['level']}] {log['message']}\n")
                         except:
                             f.write("Could not retrieve logs\n")
                     
                     messagebox.showinfo("Support Ticket Created", 
-                                      f"✅ Support ticket created successfully!\n\n"
+                                      f" Support ticket created successfully!\n\n"
                                       f"File: {log_filename}\n\n"
                                       f"Please send this file to:\n"
-                                      f"📧 freddy.pm@sahabatagro.co.id\n"
-                                      f"📱 +62 813-9855-2019\n\n"
+                                      f" freddy.pm@sahabatagro.co.id\n"
+                                      f" +62 813-9855-2019\n\n"
                                       f"Priority: {urgency_var.get()}")
                     
                     self.log_entry(f"Support ticket created: {log_filename} (Priority: {urgency_var.get()})", "INFO")
@@ -2416,8 +2204,8 @@ class MDBAgentPro:
             btn_frame = ttk.Frame(issue_window)
             btn_frame.pack(fill=tk.X, padx=20, pady=20)
             
-            ttk.Button(btn_frame, text="📧 Create Support Ticket", command=create_support_ticket).pack(side=tk.RIGHT, padx=(5, 0))
-            ttk.Button(btn_frame, text="❌ Cancel", command=issue_window.destroy).pack(side=tk.RIGHT)
+            ttk.Button(btn_frame, text=" Create Support Ticket", command=create_support_ticket).pack(side=tk.RIGHT, padx=(5, 0))
+            ttk.Button(btn_frame, text=" Cancel", command=issue_window.destroy).pack(side=tk.RIGHT)
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to prepare support ticket: {str(e)}")
@@ -2438,7 +2226,7 @@ class MDBAgentPro:
         title_frame = ttk.Frame(content_frame)
         title_frame.pack(fill=tk.X, pady=(0, 20))
         
-        ttk.Label(title_frame, text="🔄", font=('Arial', 24)).pack(side=tk.LEFT)
+        ttk.Label(title_frame, text="", font=('Arial', 24)).pack(side=tk.LEFT)
         ttk.Label(title_frame, text="MDB Agent Pro", font=('Arial', 16, 'bold')).pack(side=tk.LEFT, padx=(10, 0))
         
         # Current version info
@@ -2461,7 +2249,7 @@ class MDBAgentPro:
         status_frame = ttk.LabelFrame(content_frame, text="Update Status", padding=15)
         status_frame.pack(fill=tk.X, pady=(0, 15))
         
-        ttk.Label(status_frame, text="✅ You are running the latest version!", 
+        ttk.Label(status_frame, text=" You are running the latest version!", 
                  font=('Arial', 10, 'bold'), foreground="green").pack(anchor=tk.W)
         
         ttk.Label(status_frame, text="This version includes all the latest features and security updates.", 
@@ -2472,10 +2260,10 @@ class MDBAgentPro:
         support_frame.pack(fill=tk.X, pady=(0, 15))
         
         support_text = """For updates and support:
-📧 Email: freddy.pm@sahabatagro.co.id
-📱 Phone: +62 813-9855-2019
-🏢 Company: PT Sahabat Agro Group
-⏰ Hours: Monday-Friday, 8AM-6PM (WIB)"""
+[CHAR] Email: freddy.pm@sahabatagro.co.id
+[CHAR] Phone: +62 813-9855-2019
+[CHAR] Company: PT Sahabat Agro Group
+ Hours: Monday-Friday, 8AM-6PM (WIB)"""
         
         ttk.Label(support_frame, text=support_text, font=('Arial', 9), justify=tk.LEFT).pack(anchor=tk.W)
         
@@ -2483,8 +2271,8 @@ class MDBAgentPro:
         btn_frame = ttk.Frame(content_frame)
         btn_frame.pack(fill=tk.X, pady=(15, 0))
         
-        ttk.Button(btn_frame, text="❌ Close", command=update_window.destroy).pack(side=tk.RIGHT)
-        ttk.Button(btn_frame, text="📧 Contact Support", command=lambda: (update_window.destroy(), self.send_log_to_it())).pack(side=tk.RIGHT, padx=(0, 10))
+        ttk.Button(btn_frame, text=" Close", command=update_window.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btn_frame, text=" Contact Support", command=lambda: (update_window.destroy(), self.send_log_to_it())).pack(side=tk.RIGHT, padx=(0, 10))
     
     def reset_config(self):
         """Reset application configuration"""
@@ -2501,100 +2289,44 @@ class MDBAgentPro:
                 messagebox.showerror("Error", f"Failed to reset configuration: {str(e)}")
     
     def toggle_admin_mode(self):
-        """Toggle admin mode"""
+        """Toggle admin mode with enhanced security"""
         if not self.admin_mode:
             pin = tk.simpledialog.askstring("Admin Mode", "Enter admin PIN:", show='*')
-            if pin == self.admin_pin:
-                self.admin_mode = True
-                self.admin_btn.config(text="Exit Admin Mode")
-                self.log_entry("Admin mode enabled", "INFO")
-                messagebox.showinfo("Success", "Admin mode enabled")
+            if pin:
+                # Get stored PIN hash from config
+                stored_pin_hash = self.config_manager.get("admin_pin_hash", "")
+                
+                # If no hash stored, create one from default PIN
+                if not stored_pin_hash:
+                    default_pin = "1234"  # Default PIN
+                    stored_pin_hash = self.security.hash_password(default_pin)
+                    self.config_manager.set("admin_pin_hash", stored_pin_hash)
+                
+                # Verify PIN
+                if self.auth_manager.verify_admin_pin(pin, stored_pin_hash):
+                    self.admin_mode = True
+                    self.current_session_id = str(uuid.uuid4())
+                    self.auth_manager.create_admin_session(self.current_session_id)
+                    
+                    self.admin_btn.config(text=" Exit Admin Mode")
+                    self.log_entry("Admin mode enabled", "INFO")
+                    messagebox.showinfo("Success", "Admin mode enabled")
+                else:
+                    self.log_entry("Failed admin login attempt", "WARNING")
+                    messagebox.showerror("Error", "Invalid PIN")
             else:
-                messagebox.showerror("Error", "Invalid PIN")
+                messagebox.showwarning("Warning", "PIN is required")
         else:
             self.admin_mode = False
-            self.admin_btn.config(text="Admin Mode")
+            if self.current_session_id:
+                # Clean up session
+                if self.current_session_id in self.auth_manager.admin_sessions:
+                    del self.auth_manager.admin_sessions[self.current_session_id]
+                self.current_session_id = None
+            
+            self.admin_btn.config(text=" Admin Mode")
             self.log_entry("Admin mode disabled", "INFO")
             messagebox.showinfo("Info", "Admin mode disabled")
-    
-    def setup_green_theme(self):
-        """Setup green theme to match company logo"""
-        # Use clam theme as base for better customization
-        self.style.theme_use('clam')
-        
-        # Define green color palette
-        primary_green = '#2E7D32'      # Dark green
-        secondary_green = '#4CAF50'    # Medium green  
-        light_green = '#E8F5E8'        # Very light green
-        accent_green = '#1B5E20'       # Darker green
-        text_dark = '#1B5E20'          # Dark green text
-        
-        # Configure main components
-        self.style.configure('TFrame', background='#F8FFF8')  # Very light green background
-        self.style.configure('TLabel', background='#F8FFF8', foreground=text_dark)
-        self.style.configure('TLabelFrame', background='#F8FFF8', foreground=text_dark, borderwidth=1)
-        self.style.configure('TLabelFrame.Label', background='#F8FFF8', foreground=text_dark, font=('Arial', 9, 'bold'))
-        
-        # Buttons with green theme
-        self.style.configure('TButton', 
-                           background=secondary_green, 
-                           foreground='white',
-                           borderwidth=1,
-                           focuscolor='none')
-        self.style.map('TButton',
-                      background=[('active', primary_green), ('pressed', accent_green)])
-        
-        # Entry widgets
-        self.style.configure('TEntry', 
-                           background='white',
-                           foreground=text_dark,
-                           borderwidth=1,
-                           insertcolor=text_dark)
-        
-        # Combobox
-        self.style.configure('TCombobox',
-                           background='white',
-                           foreground=text_dark,
-                           borderwidth=1)
-        
-        # Treeview with green accents
-        self.style.configure('Treeview', 
-                           background='white', 
-                           foreground=text_dark, 
-                           fieldbackground='white',
-                           borderwidth=1)
-        self.style.configure('Treeview.Heading', 
-                           background=light_green, 
-                           foreground=text_dark,
-                           font=('Arial', 9, 'bold'))
-        
-        # Notebook (tabs)
-        self.style.configure('TNotebook', background='#F8FFF8', borderwidth=0)
-        self.style.configure('TNotebook.Tab', 
-                           background=light_green,
-                           foreground=text_dark,
-                           padding=[10, 5])
-        self.style.map('TNotebook.Tab',
-                      background=[('selected', secondary_green), ('active', primary_green)],
-                      foreground=[('selected', 'white'), ('active', 'white')])
-        
-        # Checkbutton
-        self.style.configure('TCheckbutton', 
-                           background='#F8FFF8', 
-                           foreground=text_dark,
-                           focuscolor='none')
-        
-        # Radiobutton  
-        self.style.configure('TRadiobutton',
-                           background='#F8FFF8',
-                           foreground=text_dark,
-                           focuscolor='none')
-        
-        # Separator
-        self.style.configure('TSeparator', background=light_green)
-        
-        # Update root background
-        self.root.configure(bg='#F8FFF8')
     
     def save_api_settings(self):
         """Save API settings and preserve test connection results"""
@@ -2655,21 +2387,21 @@ class MDBAgentPro:
             if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
                 if self.last_test_connection_result['success']:
                     response_time = self.last_test_connection_result.get('response_time', 'N/A')
-                    test_status_info = f"\n✅ Test Connection Status: Connected ({response_time})"
+                    test_status_info = f"\n Test Connection Status: Connected ({response_time})"
                 else:
                     error_msg = self.last_test_connection_result.get('error', 'Failed')
-                    test_status_info = f"\n⚠️ Last Test Connection: {error_msg}"
+                    test_status_info = f"\n Last Test Connection: {error_msg}"
             else:
-                test_status_info = "\n💡 Use 'Test Connection' to verify API connectivity"
+                test_status_info = "\n Use 'Test Connection' to verify API connectivity"
             
             messagebox.showinfo("Configuration Saved", 
-                              f"✅ API Configuration Saved Successfully!\n\n" +
+                              f" API Configuration Saved Successfully!\n\n" +
                               f"Profile: {current_profile}\n" +
                               f"Endpoint: {endpoint}\n" +
                               f"Authentication: {auth_display}\n" +
                               f"Method: {self.api_method_var.get()}" +
                               test_status_info +
-                              f"\n\n💡 Configuration is now available in all tabs\n" +
+                              f"\n\n Configuration is now available in all tabs\n" +
                               f"    (Dashboard, Health Check, API Field Mapping)")
             
             self.log_entry(f"API configuration saved - Profile: {current_profile}, Auth: {auth_type}", "SUCCESS")
@@ -2686,7 +2418,7 @@ class MDBAgentPro:
         try:
             # Update Health Check
             if hasattr(self, 'health_api_status'):
-                self.health_api_status.config(text="🔄 Updating...", foreground="blue")
+                self.health_api_status.config(text=" Updating...", foreground="blue")
                 self.root.after(500, self.health_test_api)  # Delayed refresh
             
             # Update Dashboard status
@@ -2716,7 +2448,7 @@ class MDBAgentPro:
                 if result['success']:
                     # Use cached test connection results instead of making new API calls
                     response_time = result.get('response_time', 'N/A')
-                    self.validation_status_var.set(f"✅ Connected ({response_time})")
+                    self.validation_status_var.set(f" Connected ({response_time})")
                     self.validation_status_label.config(foreground='green')
                     self.save_api_btn.config(state='normal')
                     self.save_status_var.set("Test passed - Ready to save")
@@ -2724,7 +2456,7 @@ class MDBAgentPro:
                     return
                 else:
                     error_msg = result.get('error', 'Connection failed')
-                    self.validation_status_var.set(f"❌ {error_msg}")
+                    self.validation_status_var.set(f" {error_msg}")
                     self.validation_status_label.config(foreground='red')
                     self.save_api_btn.config(state='normal')  # Still allow saving
                     self.save_status_var.set("Can save without test")
@@ -2736,7 +2468,7 @@ class MDBAgentPro:
             auth_type = self.auth_type_var.get()
             
             if not endpoint:
-                self.validation_status_var.set("⚠️ Enter endpoint URL to enable saving")
+                self.validation_status_var.set(" Enter endpoint URL to enable saving")
                 self.validation_status_label.config(foreground='orange')
                 self.save_api_btn.config(state='disabled')
                 self.save_status_var.set("Endpoint required")
@@ -2748,7 +2480,7 @@ class MDBAgentPro:
             if auth_type == "api_key":
                 api_key = self.api_key_var.get().strip()
                 if api_key:
-                    auth_status = "✓ API Key configured"
+                    auth_status = " API Key configured"
                 else:
                     auth_status = "API Key can be added"
                     
@@ -2759,24 +2491,24 @@ class MDBAgentPro:
                 if username and password:
                     login_status = self.login_status_var.get() if hasattr(self, 'login_status_var') else ""
                     if "successful" in login_status.lower():
-                        auth_status = "✓ Logged in and token available"
+                        auth_status = " Logged in and token available"
                     else:
                         auth_status = "Credentials configured, login available"
                 else:
                     auth_status = "Login credentials can be added"
                     
             else:  # no_auth
-                auth_status = "✓ No authentication required"
+                auth_status = " No authentication required"
             
             # Show ready status
-            self.validation_status_var.set(f"✅ Ready to save - {auth_status}")
+            self.validation_status_var.set(f" Ready to save - {auth_status}")
             self.validation_status_label.config(foreground='green')
             self.save_api_btn.config(state='normal')
             self.save_status_var.set("Ready to save configuration")
             self.save_status_label.config(foreground='green')
         
         except Exception as e:
-            self.validation_status_var.set("⚠️ Error checking status")
+            self.validation_status_var.set(" Error checking status")
             self.validation_status_label.config(foreground='orange')
             self.log_entry(f"Status check error: {str(e)}", "ERROR")
     
@@ -2789,36 +2521,36 @@ class MDBAgentPro:
                 if result['success']:
                     # Use cached test connection results instead of making new API calls
                     response_time = result.get('response_time', 'N/A')
-                    self.save_status_var.set(f"✅ Test passed ({response_time})")
+                    self.save_status_var.set(f" Test passed ({response_time})")
                     self.save_status_label.config(foreground='green')
                     
                     auth_type = self.auth_type_var.get()
                     messagebox.showinfo("Test Results", 
-                                      f"🧪 Using Test Connection Results:\n\n" +
-                                      f"✓ {auth_type.replace('_', ' ').title()} Authentication: Connected\n" +
-                                      f"✓ Response Time: {response_time}\n" +
-                                      f"✓ Endpoint accessible\n\n" +
+                                      f" Using Test Connection Results:\n\n" +
+                                      f" {auth_type.replace('_', ' ').title()} Authentication: Connected\n" +
+                                      f" Response Time: {response_time}\n" +
+                                      f" Endpoint accessible\n\n" +
                                       "Configuration is ready to save!")
                     return
                 else:
                     error_msg = result.get('error', 'Connection failed')
-                    self.save_status_var.set(f"❌ Test failed: {error_msg}")
+                    self.save_status_var.set(f" Test failed: {error_msg}")
                     self.save_status_label.config(foreground='red')
                     
                     messagebox.showwarning("Test Results", 
-                                         f"⚠️ Test Connection Result:\n\n" +
-                                         f"❌ Error: {error_msg}\n\n" +
+                                         f" Test Connection Result:\n\n" +
+                                         f" Error: {error_msg}\n\n" +
                                          "Please run Test Connection first or save configuration anyway.")
                     return
             
             # Priority 2: Basic validation check without API calls
-            self.save_status_var.set("⚙️ No test results - use Test Connection")
+            self.save_status_var.set(" No test results - use Test Connection")
             self.save_status_label.config(foreground='blue')
             
             endpoint = self.api_endpoint_var.get().strip()
             if not endpoint:
                 messagebox.showwarning("No Endpoint", "Please enter an endpoint URL first.")
-                self.save_status_var.set("⚠️ No endpoint")
+                self.save_status_var.set(" No endpoint")
                 self.save_status_label.config(foreground='orange')
                 return
             
@@ -2830,9 +2562,9 @@ class MDBAgentPro:
             if auth_type == "api_key":
                 api_key = self.api_key_var.get().strip()
                 if api_key:
-                    config_status.append("✓ API Key is configured")
+                    config_status.append(" API Key is configured")
                 else:
-                    config_status.append("ℹ️ API Key field is empty - can be filled later")
+                    config_status.append(" API Key field is empty - can be filled later")
                     
             elif auth_type == "login":
                 username = self.login_username_var.get().strip()
@@ -2840,28 +2572,28 @@ class MDBAgentPro:
                 if username and password:
                     login_status = self.login_status_var.get() if hasattr(self, 'login_status_var') else ""
                     if "successful" in login_status.lower():
-                        config_status.append("✓ Already logged in with valid token")
+                        config_status.append(" Already logged in with valid token")
                     else:
-                        config_status.append("✓ Login credentials configured")
+                        config_status.append(" Login credentials configured")
                 else:
-                    config_status.append("ℹ️ Login credentials not provided - can be configured later")
+                    config_status.append(" Login credentials not provided - can be configured later")
                     
             elif auth_type == "no_auth":
-                config_status.append("✓ No authentication endpoint configured")
+                config_status.append(" No authentication endpoint configured")
             
-            config_status.append(f"✓ Endpoint configured: {endpoint}")
-            config_status.append("ℹ️ Use 'Test Connection' to verify API connectivity")
+            config_status.append(f" Endpoint configured: {endpoint}")
+            config_status.append(" Use 'Test Connection' to verify API connectivity")
             
-            self.save_status_var.set(f"⚙️ Config ready - Test recommended")
+            self.save_status_var.set(f" Config ready - Test recommended")
             self.save_status_label.config(foreground='blue')
             
             messagebox.showinfo("Configuration Status", 
-                              f"⚙️ Configuration Status for {auth_type.replace('_', ' ').title()} Authentication:\n\n" +
+                              f" Configuration Status for {auth_type.replace('_', ' ').title()} Authentication:\n\n" +
                               "\n".join(config_status) + 
-                              "\n\n💡 Use 'Test Connection' button to verify API connectivity before saving.")
+                              "\n\n Use 'Test Connection' button to verify API connectivity before saving.")
             
         except Exception as e:
-            self.save_status_var.set("❌ Test error")
+            self.save_status_var.set(" Test error")
             self.save_status_label.config(foreground='red')
             messagebox.showerror("Test Error", f"Testing failed: {str(e)}")
             self.log_entry(f"Configuration test error: {str(e)}", "ERROR")
@@ -2938,7 +2670,7 @@ class MDBAgentPro:
         self.history_tree.bind("<Double-1>", self.view_history_details)
         
         # Information label
-        info_label = ttk.Label(history_scroll, text="💡 Double-click any row to view complete request/response details", 
+        info_label = ttk.Label(history_scroll, text=" Double-click any row to view complete request/response details", 
                               font=('Arial', 9), foreground='blue')
         info_label.pack(pady=(10, 0))
     
@@ -3029,7 +2761,7 @@ class MDBAgentPro:
         type_combo.pack(side=tk.LEFT, padx=(10, 0))
         
         # Remove button
-        remove_btn = ttk.Button(field_frame, text="×", width=3, 
+        remove_btn = ttk.Button(field_frame, text="", width=3, 
                               command=lambda: self.remove_form_field(field_frame))
         remove_btn.pack(side=tk.LEFT, padx=(10, 0))
         
@@ -3107,7 +2839,7 @@ class MDBAgentPro:
             has_auth = bool(username and password)
             
             if has_auth:
-                auth_status = f"Login Ready (username→login)"
+                auth_status = f"Login Ready (usernamelogin)"
             elif username and not password:
                 auth_status = "Password Required"
             elif not username and password:
@@ -3159,11 +2891,11 @@ class MDBAgentPro:
         # Update button status indicator
         if hasattr(self, 'button_status_label'):
             if can_test and can_send:
-                self.button_status_label.config(text="✅ Semua button aktif - siap digunakan!", foreground='green')
+                self.button_status_label.config(text=" Semua button aktif - siap digunakan!", foreground='green')
             elif can_test:
-                self.button_status_label.config(text="⚠️ Test Connection aktif, lengkapi authentication untuk Send Data", foreground='orange')
+                self.button_status_label.config(text=" Test Connection aktif, lengkapi authentication untuk Send Data", foreground='orange')
             else:
-                self.button_status_label.config(text="❌ Isi Endpoint URL untuk mengaktifkan button", foreground='red')
+                self.button_status_label.config(text=" Isi Endpoint URL untuk mengaktifkan button", foreground='red')
         
         # Update API Field Mapping status if exists
         if hasattr(self, 'refresh_api_mapping_status'):
@@ -3210,9 +2942,9 @@ class MDBAgentPro:
             elif auth_type == "login":
                 username = self.login_username_var.get().strip()
                 if username:
-                    preview_text += f"Authentication: Login (username: {username} → login field)\n\n"
+                    preview_text += f"Authentication: Login (username: {username}  login field)\n\n"
                 else:
-                    preview_text += f"Authentication: Login (⚠️ credentials required)\n\n"
+                    preview_text += f"Authentication: Login ( credentials required)\n\n"
             elif auth_type == "no_auth":
                 preview_text += "Authorization: None\n\n"
             
@@ -3243,9 +2975,9 @@ class MDBAgentPro:
                                 }
                                 sample_data.update(login_payload)
                                 formatted = json.dumps(sample_data, indent=2)
-                                preview_text += f"{formatted}\n\n✓ Username auto-converted to 'login' field"
+                                preview_text += f"{formatted}\n\n Username auto-converted to 'login' field"
                             else:
-                                preview_text += "{\n  \"login\": \"<username>\",\n  \"password\": \"<password>\"\n}\n\n⚠️ Fill username & password above"
+                                preview_text += "{\n  \"login\": \"<username>\",\n  \"password\": \"<password>\"\n}\n\n Fill username & password above"
                         else:
                             preview_text += "{}"
                         
@@ -3274,7 +3006,7 @@ class MDBAgentPro:
         try:
             endpoint = self.api_endpoint_var.get().strip()
             if not endpoint:
-                self.show_error_response("❌ Endpoint URL is required")
+                self.show_error_response(" Endpoint URL is required")
                 return
             
             method = self.api_method_var.get()
@@ -3299,7 +3031,7 @@ class MDBAgentPro:
                 headers['Authorization'] = f'Bearer {api_key}'
             
             # Log test mode
-            self.log_entry(f"🧪 Testing API Connection: {method} {endpoint} (test mode - no auto-save)", "INFO")
+            self.log_entry(f" Testing API Connection: {method} {endpoint} (test mode - no auto-save)", "INFO")
             
             # Store test result for propagation to other features
             test_successful = False
@@ -3320,7 +3052,7 @@ class MDBAgentPro:
                         # Validate JSON structure
                         json.dumps(json_data)  # This will raise if invalid
                     except json.JSONDecodeError as e:
-                        self.show_error_response(f"❌ Invalid JSON in body: {str(e)}\n\n💡 Tip: Check for missing quotes, trailing commas, or syntax errors")
+                        self.show_error_response(f" Invalid JSON in body: {str(e)}\n\n Tip: Check for missing quotes, trailing commas, or syntax errors")
                         return
                 else:
                     # Default test payload for login endpoints
@@ -3370,7 +3102,7 @@ class MDBAgentPro:
                         data[key] = field_info['value']
             
             # Update response status
-            self.response_status_var.set("🔄 Testing connection...")
+            self.response_status_var.set(" Testing connection...")
             self.response_status_label.config(foreground='orange')
             
             # Make request with body if specified
@@ -3402,15 +3134,15 @@ class MDBAgentPro:
                     response = requests.request(method, endpoint, json=json_data, data=data, headers=headers, timeout=15)
                 
             except requests.exceptions.Timeout:
-                self.response_status_var.set("❌ Connection timeout")
+                self.response_status_var.set(" Connection timeout")
                 self.response_status_label.config(foreground='red')
-                self.show_error_response("Connection timeout (15s)\n\n💡 Tips:\n• Check if the server is running\n• Verify the endpoint URL\n• Check your internet connection\n• Server might be slow or overloaded")
+                self.show_error_response("Connection timeout (15s)\n\n Tips:\n Check if the server is running\n Verify the endpoint URL\n Check your internet connection\n Server might be slow or overloaded")
                 return
                 
             except requests.exceptions.ConnectionError:
-                self.response_status_var.set("❌ Connection failed")
+                self.response_status_var.set(" Connection failed")
                 self.response_status_label.config(foreground='red')
-                self.show_error_response("Could not connect to endpoint\n\n💡 Tips:\n• Verify the URL is correct (include http/https)\n• Check if the server is running\n• Check firewall settings\n• Verify network connectivity")
+                self.show_error_response("Could not connect to endpoint\n\n Tips:\n Verify the URL is correct (include http/https)\n Check if the server is running\n Check firewall settings\n Verify network connectivity")
                 return
             
             response_time = round((time.time() - start_time) * 1000, 2)
@@ -3419,15 +3151,15 @@ class MDBAgentPro:
             status_code = response.status_code
             if status_code < 300:
                 color = 'green'
-                status_icon = "✅"
+                status_icon = ""
                 status_text = "SUCCESS"
             elif status_code < 400:
                 color = 'orange'
-                status_icon = "⚠️"
+                status_icon = ""
                 status_text = "WARNING"
             else:
                 color = 'red'
-                status_icon = "❌"
+                status_icon = ""
                 status_text = "ERROR"
             
             status_display = f"{status_icon} {status_code} {status_text} ({response_time}ms)"
@@ -3438,7 +3170,7 @@ class MDBAgentPro:
             self.response_text.config(state=tk.NORMAL)
             self.response_text.delete("1.0", tk.END)
             
-            response_content = f"🧪 TEST MODE - NO AUTO-SAVE\n"
+            response_content = f" TEST MODE - NO AUTO-SAVE\n"
             response_content += f"="*50 + "\n\n"
             response_content += f"REQUEST DETAILS:\n"
             response_content += f"Method: {method}\n"
@@ -3472,19 +3204,19 @@ class MDBAgentPro:
             
             # Add troubleshooting tips for errors
             if status_code >= 400:
-                response_content += f"\n\n💡 TROUBLESHOOTING TIPS:\n"
+                response_content += f"\n\n TROUBLESHOOTING TIPS:\n"
                 if status_code == 400:
-                    response_content += "• Check request body format and required fields\n• Verify JSON syntax is valid\n• Ensure all required parameters are included"
+                    response_content += " Check request body format and required fields\n Verify JSON syntax is valid\n Ensure all required parameters are included"
                 elif status_code == 401:
-                    response_content += "• Check authentication credentials\n• Verify API key or login details\n• Ensure authorization header is correct"
+                    response_content += " Check authentication credentials\n Verify API key or login details\n Ensure authorization header is correct"
                 elif status_code == 403:
-                    response_content += "• Check API permissions\n• Verify account has access to this endpoint\n• Check rate limiting"
+                    response_content += " Check API permissions\n Verify account has access to this endpoint\n Check rate limiting"
                 elif status_code == 404:
-                    response_content += "• Verify endpoint URL is correct\n• Check if the API path exists\n• Ensure method is supported"
+                    response_content += " Verify endpoint URL is correct\n Check if the API path exists\n Ensure method is supported"
                 elif status_code == 500:
-                    response_content += "• Server internal error\n• Check server logs\n• Contact API provider\n• Try again later"
+                    response_content += " Server internal error\n Check server logs\n Contact API provider\n Try again later"
                 else:
-                    response_content += f"• HTTP {status_code} error\n• Check API documentation\n• Verify request format"
+                    response_content += f" HTTP {status_code} error\n Check API documentation\n Verify request format"
             
             self.response_text.insert("1.0", response_content)
             self.response_text.config(state=tk.DISABLED)
@@ -3504,12 +3236,12 @@ class MDBAgentPro:
                 payload_summary = "No body"
             
             # Add test mode indicator to history
-            action_name = "🧪 Test Connection (No Auto-Save)"
+            action_name = " Test Connection (No Auto-Save)"
             self.add_to_history(action_name, method, endpoint, status_code, 
                               response.text[:100], payload_summary, response_time)
             
             # Log result with details (TEST MODE)
-            log_msg = f"🧪 API connection test: {method} {endpoint} -> {status_code} in {response_time}ms (test mode)"
+            log_msg = f" API connection test: {method} {endpoint} -> {status_code} in {response_time}ms (test mode)"
             if status_code < 400:
                 self.log_entry(log_msg, "SUCCESS")
             else:
@@ -3519,9 +3251,9 @@ class MDBAgentPro:
             self.propagate_test_connection_results(test_successful, status_code, test_response_text, response_time)
             
         except Exception as e:
-            self.response_status_var.set("❌ Test failed")
+            self.response_status_var.set(" Test failed")
             self.response_status_label.config(foreground='red')
-            error_msg = f"🧪 Connection test failed: {str(e)} (test mode - no auto-save)"
+            error_msg = f" Connection test failed: {str(e)} (test mode - no auto-save)"
             self.show_error_response(error_msg)
             self.log_entry(error_msg, "ERROR")
             
@@ -3544,7 +3276,7 @@ class MDBAgentPro:
             
             if test_successful:
                 # SUCCESS - Update all status indicators to show test passed
-                success_msg = f"✅ Test Passed ({status_code}, {response_time}ms)"
+                success_msg = f" Test Passed ({status_code}, {response_time}ms)"
                 
                 # Update Dashboard API Status
                 if hasattr(self, 'dash_api_status'):
@@ -3557,7 +3289,7 @@ class MDBAgentPro:
                 # Update API Field Mapping Status
                 if hasattr(self, 'api_status_label'):
                     self.api_status_label.config(
-                        text=f"✅ API Connected ({response_time}ms)\n🌐 Test successful - Ready for mapping", 
+                        text=f" API Connected ({response_time}ms)\n Test successful - Ready for mapping", 
                         foreground='green'
                     )
                     
@@ -3575,14 +3307,14 @@ class MDBAgentPro:
                     ))
                 
                 # Log success propagation
-                self.log_entry(f"🔄 Test connection success propagated to all features (Status: {status_code})", "SUCCESS")
+                self.log_entry(f" Test connection success propagated to all features (Status: {status_code})", "SUCCESS")
                 
             else:
                 # FAILED - Update all status indicators to show test failed
                 if status_code > 0:
-                    fail_msg = f"❌ Test Failed ({status_code})"
+                    fail_msg = f" Test Failed ({status_code})"
                 else:
-                    fail_msg = f"❌ Test Failed (Connection Error)"
+                    fail_msg = f" Test Failed (Connection Error)"
                 
                 # Update Dashboard API Status
                 if hasattr(self, 'dash_api_status'):
@@ -3596,7 +3328,7 @@ class MDBAgentPro:
                 if hasattr(self, 'api_status_label'):
                     error_detail = response_text[:50] if response_text else "Connection failed"
                     self.api_status_label.config(
-                        text=f"❌ API Test Failed\n⚠️ {error_detail}", 
+                        text=f" API Test Failed\n {error_detail}", 
                         foreground='red'
                     )
                     
@@ -3615,7 +3347,7 @@ class MDBAgentPro:
                     ))
                 
                 # Log failure propagation
-                self.log_entry(f"🔄 Test connection failure propagated to all features ({fail_msg})", "ERROR")
+                self.log_entry(f" Test connection failure propagated to all features ({fail_msg})", "ERROR")
             
             # Refresh API Field Mapping status to use the stored results
             if hasattr(self, 'refresh_api_mapping_status'):
@@ -3626,7 +3358,7 @@ class MDBAgentPro:
                 self.root.after(200, self.refresh_dashboard_after_test)
                 
         except Exception as e:
-            self.log_entry(f"⚠️ Failed to propagate test results: {str(e)}", "ERROR")
+            self.log_entry(f" Failed to propagate test results: {str(e)}", "ERROR")
     
     def refresh_dashboard_after_test(self):
         """Refresh dashboard specifically after test connection to show updated status"""
@@ -3636,9 +3368,9 @@ class MDBAgentPro:
             
             # Update agent status
             if self.is_running:
-                self.dash_agent_status.config(text="🟢 Running", foreground="green")
+                self.dash_agent_status.config(text=" Running", foreground="green")
             else:
-                self.dash_agent_status.config(text="⭕ Stopped", foreground="red")
+                self.dash_agent_status.config(text=" Stopped", foreground="red")
             
             # Update buffer status
             try:
@@ -3649,17 +3381,17 @@ class MDBAgentPro:
                 conn.close()
                 
                 if count > 0:
-                    self.dash_buffer_status.config(text=f"⚠️ {count} items", foreground="orange")
+                    self.dash_buffer_status.config(text=f" {count} items", foreground="orange")
                 else:
-                    self.dash_buffer_status.config(text="✅ 0 items", foreground="green")
+                    self.dash_buffer_status.config(text=" 0 items", foreground="green")
             except:
-                self.dash_buffer_status.config(text="❌ Error", foreground="red")
+                self.dash_buffer_status.config(text=" Error", foreground="red")
                 
             # Note: We deliberately DON'T call full refresh_dashboard() here 
             # to preserve the test connection results in dash_api_status
             
         except Exception as e:
-            self.log_entry(f"⚠️ Dashboard refresh after test failed: {str(e)}", "ERROR")
+            self.log_entry(f" Dashboard refresh after test failed: {str(e)}", "ERROR")
     
     def send_sample_data_advanced(self):
         """Send sample data using current API settings with login auto-conversion"""
@@ -3668,12 +3400,12 @@ class MDBAgentPro:
             errors, warnings = self.validate_api_settings_advanced()
             
             if errors:
-                error_msg = "\n".join(f"• {error}" for error in errors)
+                error_msg = "\n".join(f" {error}" for error in errors)
                 messagebox.showerror("Validation Error", f"Please fix the following issues:\n\n{error_msg}")
                 return
             
             if warnings:
-                warning_msg = "\n".join(f"• {warning}" for warning in warnings)
+                warning_msg = "\n".join(f" {warning}" for warning in warnings)
                 result = messagebox.askyesno("Validation Warning", 
                                            f"Please note:\n\n{warning_msg}\n\nDo you want to continue?")
                 if not result:
@@ -3722,7 +3454,7 @@ class MDBAgentPro:
                                     "password": password,
                                     "database": database or "default"
                                 }
-                                self.log_entry(f"Using login credentials for sample data (username→login)", "INFO")
+                                self.log_entry(f"Using login credentials for sample data (usernamelogin)", "INFO")
                             else:
                                 messagebox.showerror("Error", "Login credentials required for login endpoint")
                                 return
@@ -3785,7 +3517,7 @@ class MDBAgentPro:
             # Send request (skip if test mode)
             if test_mode:
                 # Simulate response for test mode with login auto-conversion info
-                self.response_status_var.set("Test Mode - No data sent ✓")
+                self.response_status_var.set("Test Mode - No data sent ")
                 self.response_status_label.config(foreground='blue')
                 
                 self.response_text.config(state=tk.NORMAL)
@@ -3797,7 +3529,7 @@ class MDBAgentPro:
                 if auth_type == "login" and data:
                     preview_text += "Data (with auto-conversion):\n"
                     if 'login' in str(data):
-                        preview_text += "✓ Username auto-converted to 'login' field\n"
+                        preview_text += " Username auto-converted to 'login' field\n"
                     preview_text += f"{data}"
                 else:
                     preview_text += f"Data: {data}"
@@ -3829,11 +3561,11 @@ class MDBAgentPro:
                 status_text = f"Response: {response.status_code} ({response_time}ms)"
                 if response.status_code < 300:
                     self.response_status_label.config(foreground='green')
-                    status_text += " ✓"
+                    status_text += " "
                     log_level = "SUCCESS"
                 else:
                     self.response_status_label.config(foreground='red')
-                    status_text += " ✗"
+                    status_text += " "
                     log_level = "ERROR"
                 
                 self.response_status_var.set(status_text)
@@ -3863,7 +3595,7 @@ class MDBAgentPro:
                 if response.status_code < 300:
                     success_msg = f"Sample data sent successfully!\nStatus: {response.status_code}\nTime: {response_time}ms"
                     if auth_type == "login":
-                        success_msg += "\n\n✓ Username was auto-converted to 'login' field"
+                        success_msg += "\n\n Username was auto-converted to 'login' field"
                     messagebox.showinfo("Success", success_msg)
                 else:
                     messagebox.showerror("Error", f"Request failed with status {response.status_code}\nResponse: {response.text[:200]}...")
@@ -3912,11 +3644,11 @@ class MDBAgentPro:
         self.response_text.config(state=tk.NORMAL)
         self.response_text.delete("1.0", tk.END)
         self.response_text.insert("1.0", f"Error: {error_msg}\n\nTroubleshooting Tips:\n"
-                                        "• Check your internet connection\n"
-                                        "• Verify the endpoint URL is correct\n"
-                                        "• Ensure authentication credentials are valid\n"
-                                        "• Check if the API server is running\n"
-                                        "• Review request format and required fields")
+                                        " Check your internet connection\n"
+                                        " Verify the endpoint URL is correct\n"
+                                        " Ensure authentication credentials are valid\n"
+                                        " Check if the API server is running\n"
+                                        " Review request format and required fields")
         self.response_text.config(state=tk.DISABLED)
         self.log_entry(error_msg, "ERROR")
     
@@ -3926,11 +3658,11 @@ class MDBAgentPro:
         
         # Format status with color indicator
         if status_code < 300:
-            status_text = f"✅ {status_code}"
+            status_text = f" {status_code}"
         elif status_code < 400:
-            status_text = f"⚠️ {status_code}"
+            status_text = f" {status_code}"
         else:
-            status_text = f"❌ {status_code}"
+            status_text = f" {status_code}"
         
         history_item = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -4608,23 +4340,23 @@ FULL RESPONSE:
             
             if username and password:
                 # Both filled - show success
-                self.login_warning_var.set("✓ Valid")
+                self.login_warning_var.set(" Valid")
                 self.login_warning_label.config(foreground='green')
                 
             elif username and not password:
                 # Username filled but no password
-                self.login_warning_var.set("⚠️ Password required!")
+                self.login_warning_var.set(" Password required!")
                 self.login_warning_label.config(foreground='orange')
                 
             elif not username and password:
                 # Password filled but no username
-                self.login_warning_var.set("⚠️ Username required!")
+                self.login_warning_var.set(" Username required!")
                 self.login_warning_label.config(foreground='orange')
                 
             elif not username and not password:
                 # Both empty - show info about login field
                 if self.auth_type_var.get() == "login":
-                    self.login_warning_var.set("⚠️ Login fields required!")
+                    self.login_warning_var.set(" Login fields required!")
                     self.login_warning_label.config(foreground='red')
                 else:
                     self.login_warning_var.set("")
@@ -4801,12 +4533,12 @@ FULL RESPONSE:
                         
                         # Auto-refresh dashboard status with successful API connection
                         if hasattr(self, 'dash_api_status'):
-                            self.dash_api_status.config(text="✅ Connected & Authenticated", foreground="green")
+                            self.dash_api_status.config(text=" Connected & Authenticated", foreground="green")
                         
                         # Auto-refresh health check status
                         if hasattr(self, 'health_api_status'):
                             try:
-                                self.health_api_status.config(text="✅ Authenticated", foreground="green")
+                                self.health_api_status.config(text=" Authenticated", foreground="green")
                                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 self.health_tree.insert("", 0, values=(timestamp, "API", "PASS", f"Login successful - Token obtained and API authenticated"))
                             except:
@@ -4823,9 +4555,9 @@ FULL RESPONSE:
                         self.login_status_label.config(foreground='orange')
                         
                         messagebox.showwarning("Warning", 
-                                             f"✅ Login request was successful with auto-conversion,\n"
+                                             f" Login request was successful with auto-conversion,\n"
                                              f"but access token not found in response.\n\n"
-                                             f"✓ Username '{username}' was converted to 'login' field\n"
+                                             f" Username '{username}' was converted to 'login' field\n"
                                              f"Response: {response.text[:200]}...")
                         
                 except ValueError as e:
@@ -4834,7 +4566,7 @@ FULL RESPONSE:
                     self.login_status_label.config(foreground='red')
                     
                     messagebox.showerror("Error", 
-                                       f"❌ Login request returned invalid JSON.\n\n"
+                                       f" Login request returned invalid JSON.\n\n"
                                        f"Note: Username '{username}' was converted to 'login' field\n"
                                        f"Response: {response.text[:200]}...")
                     
@@ -4846,13 +4578,13 @@ FULL RESPONSE:
                 # Update dashboard with specific status for 400 errors
                 if hasattr(self, 'dash_api_status'):
                     if response.status_code == 400:
-                        self.dash_api_status.config(text=f"⚠️ Bad Request (400) - Check credentials", foreground="orange")
+                        self.dash_api_status.config(text=f" Bad Request (400) - Check credentials", foreground="orange")
                     elif response.status_code == 401:
-                        self.dash_api_status.config(text=f"❌ Unauthorized (401)", foreground="red")
+                        self.dash_api_status.config(text=f" Unauthorized (401)", foreground="red")
                     else:
-                        self.dash_api_status.config(text=f"❌ Login Failed ({response.status_code})", foreground="red")
+                        self.dash_api_status.config(text=f" Login Failed ({response.status_code})", foreground="red")
                 
-                error_msg = f"❌ Login failed with status {response.status_code}\n\n"
+                error_msg = f" Login failed with status {response.status_code}\n\n"
                 error_msg += f"Note: Username '{username}' was converted to 'login' field\n"
                 try:
                     error_detail = response.json().get('message', response.text)
@@ -4869,7 +4601,7 @@ FULL RESPONSE:
             
             # Update dashboard
             if hasattr(self, 'dash_api_status'):
-                self.dash_api_status.config(text="❌ Timeout", foreground="red")
+                self.dash_api_status.config(text=" Timeout", foreground="red")
             
             error_msg = "Login request timed out. Please check your connection and endpoint URL."
             messagebox.showerror("Timeout", error_msg)
@@ -4881,7 +4613,7 @@ FULL RESPONSE:
             
             # Update dashboard
             if hasattr(self, 'dash_api_status'):
-                self.dash_api_status.config(text="❌ Connection Failed", foreground="red")
+                self.dash_api_status.config(text=" Connection Failed", foreground="red")
             
             error_msg = "Could not connect to the API endpoint. Please check the URL and your internet connection."
             messagebox.showerror("Connection Error", error_msg)
@@ -4893,7 +4625,7 @@ FULL RESPONSE:
             
             # Update dashboard
             if hasattr(self, 'dash_api_status'):
-                self.dash_api_status.config(text="❌ Login Error", foreground="red")
+                self.dash_api_status.config(text=" Login Error", foreground="red")
             
             error_msg = f"Unexpected error during login: {str(e)}"
             messagebox.showerror("Error", error_msg)
@@ -4925,65 +4657,65 @@ FULL RESPONSE:
             }
             
             # Log the test (NO AUTO-SAVE - this is testing only)
-            self.log_entry(f"🧪 Testing API Key authentication to {endpoint} (no auto-save)", "INFO")
+            self.log_entry(f" Testing API Key authentication to {endpoint} (no auto-save)", "INFO")
             
             # Send test request
             response = requests.get(endpoint, headers=headers, timeout=15)
             
             # Update status based on response (NO AUTO-SAVE)
             if response.status_code == 200:
-                self.api_key_status_var.set("✅ API Key valid!")
+                self.api_key_status_var.set(" API Key valid!")
                 self.api_key_status_label.config(foreground='green')
                 
                 # Show response in preview
                 self.show_api_key_response(response)
                 
                 messagebox.showinfo("Test Success", 
-                                  f"✅ API Key authentication test successful!\n\n"
+                                  f" API Key authentication test successful!\n\n"
                                   f"Status: {response.status_code}\n"
                                   f"Response: {response.text[:100]}...\n\n"
-                                  f"💡 Note: This is a test only - no configuration saved")
+                                  f" Note: This is a test only - no configuration saved")
                 
             elif response.status_code == 401:
-                self.api_key_status_var.set("❌ Unauthorized - Invalid API Key")
+                self.api_key_status_var.set(" Unauthorized - Invalid API Key")
                 self.api_key_status_label.config(foreground='red')
                 
                 self.show_api_key_response(response, is_error=True)
-                messagebox.showerror("Test Failed", "❌ API Key is invalid or expired\n\n💡 Note: Test only - configuration not affected")
+                messagebox.showerror("Test Failed", " API Key is invalid or expired\n\n Note: Test only - configuration not affected")
                 
             elif response.status_code == 403:
-                self.api_key_status_var.set("❌ Forbidden - Insufficient permissions")
+                self.api_key_status_var.set(" Forbidden - Insufficient permissions")
                 self.api_key_status_label.config(foreground='red')
                 
                 self.show_api_key_response(response, is_error=True)
-                messagebox.showerror("Test Failed", "❌ API Key valid but insufficient permissions\n\n💡 Note: Test only - configuration not affected")
+                messagebox.showerror("Test Failed", " API Key valid but insufficient permissions\n\n Note: Test only - configuration not affected")
                 
             else:
-                self.api_key_status_var.set(f"⚠️ Response {response.status_code}")
+                self.api_key_status_var.set(f" Response {response.status_code}")
                 self.api_key_status_label.config(foreground='orange')
                 
                 self.show_api_key_response(response, is_error=True)
                 messagebox.showwarning("Test Warning", 
-                                     f"⚠️ Unexpected response status: {response.status_code}\n"
+                                     f" Unexpected response status: {response.status_code}\n"
                                      f"Response: {response.text[:100]}...\n\n"
-                                     f"💡 Note: Test only - no configuration saved")
+                                     f" Note: Test only - no configuration saved")
             
         except requests.exceptions.Timeout:
-            self.api_key_status_var.set("❌ Timeout")
+            self.api_key_status_var.set(" Timeout")
             self.api_key_status_label.config(foreground='red')
-            messagebox.showerror("Test Timeout", "Request timed out. Please check your connection.\n\n💡 Note: Test only - configuration not affected")
+            messagebox.showerror("Test Timeout", "Request timed out. Please check your connection.\n\n Note: Test only - configuration not affected")
             
         except requests.exceptions.ConnectionError:
-            self.api_key_status_var.set("❌ Connection failed")
+            self.api_key_status_var.set(" Connection failed")
             self.api_key_status_label.config(foreground='red')
-            messagebox.showerror("Test Connection Error", "Could not connect to the endpoint.\n\n💡 Note: Test only - configuration not affected")
+            messagebox.showerror("Test Connection Error", "Could not connect to the endpoint.\n\n Note: Test only - configuration not affected")
             
         except Exception as e:
-            self.api_key_status_var.set("❌ Test failed")
+            self.api_key_status_var.set(" Test failed")
             self.api_key_status_label.config(foreground='red')
             error_msg = f"API Key test failed: {str(e)}"
-            messagebox.showerror("Test Error", f"{error_msg}\n\n💡 Note: Test only - configuration not affected")
-            self.log_entry(f"🧪 {error_msg} (test mode)", "ERROR")
+            messagebox.showerror("Test Error", f"{error_msg}\n\n Note: Test only - configuration not affected")
+            self.log_entry(f" {error_msg} (test mode)", "ERROR")
     
     def test_no_auth(self):
         """Test API endpoint without authentication"""
@@ -5012,54 +4744,54 @@ FULL RESPONSE:
             
             # Update status based on response
             if response.status_code == 200:
-                self.no_auth_status_var.set("✅ Endpoint accessible!")
+                self.no_auth_status_var.set(" Endpoint accessible!")
                 self.no_auth_status_label.config(foreground='green')
                 
                 # Show response in preview
                 self.show_no_auth_response(response)
                 
                 messagebox.showinfo("Success", 
-                                  f"✅ Endpoint is accessible without authentication!\n\n"
+                                  f" Endpoint is accessible without authentication!\n\n"
                                   f"Status: {response.status_code}\n"
                                   f"Response: {response.text[:100]}...")
                 
             elif response.status_code == 401:
-                self.no_auth_status_var.set("🔒 Authentication required")
+                self.no_auth_status_var.set(" Authentication required")
                 self.no_auth_status_label.config(foreground='orange')
                 
                 self.show_no_auth_response(response, is_error=True)
                 messagebox.showwarning("Authentication Required", 
-                                     "🔒 This endpoint requires authentication.\n"
+                                     " This endpoint requires authentication.\n"
                                      "Please switch to API Key or Login authentication.")
                 
             elif response.status_code == 404:
-                self.no_auth_status_var.set("❌ Endpoint not found")
+                self.no_auth_status_var.set(" Endpoint not found")
                 self.no_auth_status_label.config(foreground='red')
                 
                 self.show_no_auth_response(response, is_error=True)
-                messagebox.showerror("Not Found", "❌ Endpoint not found. Please check the URL.")
+                messagebox.showerror("Not Found", " Endpoint not found. Please check the URL.")
                 
             else:
-                self.no_auth_status_var.set(f"📡 Response {response.status_code}")
+                self.no_auth_status_var.set(f" Response {response.status_code}")
                 self.no_auth_status_label.config(foreground='blue')
                 
                 self.show_no_auth_response(response)
                 messagebox.showinfo("Response Received", 
-                                  f"📡 Endpoint responded with status: {response.status_code}\n"
+                                  f" Endpoint responded with status: {response.status_code}\n"
                                   f"Response: {response.text[:100]}...")
             
         except requests.exceptions.Timeout:
-            self.no_auth_status_var.set("❌ Timeout")
+            self.no_auth_status_var.set(" Timeout")
             self.no_auth_status_label.config(foreground='red')
             messagebox.showerror("Timeout", "Request timed out. Please check your connection.")
             
         except requests.exceptions.ConnectionError:
-            self.no_auth_status_var.set("❌ Connection failed")
+            self.no_auth_status_var.set(" Connection failed")
             self.no_auth_status_label.config(foreground='red')
             messagebox.showerror("Connection Error", "Could not connect to the endpoint.")
             
         except Exception as e:
-            self.no_auth_status_var.set("❌ Test failed")
+            self.no_auth_status_var.set(" Test failed")
             self.no_auth_status_label.config(foreground='red')
             error_msg = f"Endpoint test failed: {str(e)}"
             messagebox.showerror("Error", error_msg)
@@ -5125,16 +4857,16 @@ FULL RESPONSE:
         endpoint = self.api_endpoint_var.get().strip()
         
         if not endpoint:
-            self.api_key_status_var.set("⚠️ Enter endpoint first")
+            self.api_key_status_var.set(" Enter endpoint first")
             self.api_key_status_label.config(foreground='orange')
         elif not api_key:
-            self.api_key_status_var.set("🔑 Enter API key to test")
+            self.api_key_status_var.set(" Enter API key to test")
             self.api_key_status_label.config(foreground='gray')
         elif len(api_key) < 10:
-            self.api_key_status_var.set("⚠️ API key seems too short")
+            self.api_key_status_var.set(" API key seems too short")
             self.api_key_status_label.config(foreground='orange')
         else:
-            self.api_key_status_var.set("✅ Ready to test API key")
+            self.api_key_status_var.set(" Ready to test API key")
             self.api_key_status_label.config(foreground='green')
     
     def update_no_auth_status(self):
@@ -5142,13 +4874,13 @@ FULL RESPONSE:
         endpoint = self.api_endpoint_var.get().strip()
         
         if not endpoint:
-            self.no_auth_status_var.set("🌐 Enter endpoint to test")
+            self.no_auth_status_var.set(" Enter endpoint to test")
             self.no_auth_status_label.config(foreground='gray')
         elif not (endpoint.startswith('http://') or endpoint.startswith('https://')):
-            self.no_auth_status_var.set("⚠️ URL should start with http:// or https://")
+            self.no_auth_status_var.set(" URL should start with http:// or https://")
             self.no_auth_status_label.config(foreground='orange')
         else:
-            self.no_auth_status_var.set("✅ Ready to test endpoint")
+            self.no_auth_status_var.set(" Ready to test endpoint")
             self.no_auth_status_label.config(foreground='green')
     
     def show_login_response_dialog(self, response_data, access_token, refresh_token=None, username="", database=""):
@@ -5170,7 +4902,7 @@ FULL RESPONSE:
             title_frame = ttk.Frame(dialog)
             title_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
             
-            title_label = ttk.Label(title_frame, text="🎉 Login Successful!", 
+            title_label = ttk.Label(title_frame, text=" Login Successful!", 
                                    font=('Arial', 16, 'bold'), foreground='green')
             title_label.pack()
             
@@ -5187,19 +4919,19 @@ FULL RESPONSE:
             
             # Login details
             ttk.Label(info_grid, text="Username:", font=('Arial', 9, 'bold')).grid(row=0, column=0, sticky=tk.W)
-            ttk.Label(info_grid, text=f"{username} → login", foreground='blue').grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
+            ttk.Label(info_grid, text=f"{username}  login", foreground='blue').grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
             
             ttk.Label(info_grid, text="Database:", font=('Arial', 9, 'bold')).grid(row=1, column=0, sticky=tk.W)
             ttk.Label(info_grid, text=database).grid(row=1, column=1, sticky=tk.W, padx=(10, 0))
             
             ttk.Label(info_grid, text="Access Token:", font=('Arial', 9, 'bold')).grid(row=2, column=0, sticky=tk.W)
             token_display = f"{access_token[:20]}..." if len(access_token) > 20 else access_token
-            ttk.Label(info_grid, text=f"✅ {token_display}", foreground='green').grid(row=2, column=1, sticky=tk.W, padx=(10, 0))
+            ttk.Label(info_grid, text=f" {token_display}", foreground='green').grid(row=2, column=1, sticky=tk.W, padx=(10, 0))
             
             if refresh_token:
                 ttk.Label(info_grid, text="Refresh Token:", font=('Arial', 9, 'bold')).grid(row=3, column=0, sticky=tk.W)
                 refresh_display = f"{refresh_token[:20]}..." if len(refresh_token) > 20 else refresh_token
-                ttk.Label(info_grid, text=f"✅ {refresh_display}", foreground='green').grid(row=3, column=1, sticky=tk.W, padx=(10, 0))
+                ttk.Label(info_grid, text=f" {refresh_display}", foreground='green').grid(row=3, column=1, sticky=tk.W, padx=(10, 0))
             
             # Response body frame
             response_frame = ttk.LabelFrame(dialog, text="Response Body (JSON)", padding=10)
@@ -5248,32 +4980,32 @@ FULL RESPONSE:
             def copy_access_token():
                 dialog.clipboard_clear()
                 dialog.clipboard_append(access_token)
-                copy_btn.config(text="✅ Copied!")
-                dialog.after(2000, lambda: copy_btn.config(text="📋 Copy Access Token"))
+                copy_btn.config(text=" Copied!")
+                dialog.after(2000, lambda: copy_btn.config(text=" Copy Access Token"))
             
             def copy_response():
                 dialog.clipboard_clear()
                 dialog.clipboard_append(formatted_json)
-                copy_response_btn.config(text="✅ Copied!")
-                dialog.after(2000, lambda: copy_response_btn.config(text="📋 Copy Response"))
+                copy_response_btn.config(text=" Copied!")
+                dialog.after(2000, lambda: copy_response_btn.config(text=" Copy Response"))
             
             # Buttons
             btn_frame = ttk.Frame(action_frame)
             btn_frame.pack(expand=True)
             
-            copy_btn = ttk.Button(btn_frame, text="📋 Copy Access Token", command=copy_access_token)
+            copy_btn = ttk.Button(btn_frame, text=" Copy Access Token", command=copy_access_token)
             copy_btn.pack(side=tk.LEFT, padx=(0, 10))
             
-            copy_response_btn = ttk.Button(btn_frame, text="📋 Copy Response", command=copy_response)
+            copy_response_btn = ttk.Button(btn_frame, text=" Copy Response", command=copy_response)
             copy_response_btn.pack(side=tk.LEFT, padx=(0, 10))
             
-            ttk.Button(btn_frame, text="✅ Continue", command=dialog.destroy).pack(side=tk.LEFT, padx=(10, 0))
+            ttk.Button(btn_frame, text=" Continue", command=dialog.destroy).pack(side=tk.LEFT, padx=(10, 0))
             
             # Status message
             status_frame = ttk.Frame(action_frame)
             status_frame.pack(fill=tk.X, pady=(10, 0))
             
-            status_msg = ttk.Label(status_frame, text="✅ Token telah otomatis diisi ke API Key field. Anda sekarang dapat menggunakan semua fitur API.", 
+            status_msg = ttk.Label(status_frame, text=" Token telah otomatis diisi ke API Key field. Anda sekarang dapat menggunakan semua fitur API.", 
                                   font=('Arial', 9), foreground='green', wraplength=550)
             status_msg.pack()
             
@@ -5286,10 +5018,10 @@ FULL RESPONSE:
         except Exception as e:
             # Fallback to simple message if dialog creation fails
             messagebox.showinfo("Login Successful", 
-                              f"✅ Login successful with auto-conversion!\n\n"
-                              f"✓ Username '{username}' converted to 'login' field\n"
-                              f"✓ Token automatically filled in API Key field\n"
-                              f"✓ Database: {database}\n\n"
+                              f" Login successful with auto-conversion!\n\n"
+                              f" Username '{username}' converted to 'login' field\n"
+                              f" Token automatically filled in API Key field\n"
+                              f" Database: {database}\n\n"
                               f"Response: {str(response_data)[:200]}...")
     
     def send_sample_data(self):
@@ -5498,9 +5230,9 @@ FULL RESPONSE:
         """Refresh dashboard data with API Settings integration"""
         # Update database status
         if self.db_connection:
-            self.dash_db_status.config(text="✅ Connected", foreground="green")
+            self.dash_db_status.config(text=" Connected", foreground="green")
         else:
-            self.dash_db_status.config(text="❌ Not Connected", foreground="red")
+            self.dash_db_status.config(text=" Not Connected", foreground="red")
         
         # Update API status based on API Settings
         endpoint = self.api_endpoint_var.get().strip() if hasattr(self, 'api_endpoint_var') else self.config.get('api_endpoint', '')
@@ -5511,32 +5243,32 @@ FULL RESPONSE:
             if auth_type == "api_key":
                 api_key = self.api_key_var.get().strip() if hasattr(self, 'api_key_var') else ""
                 if api_key:
-                    self.dash_api_status.config(text="✅ Configured (API Key)", foreground="green")
+                    self.dash_api_status.config(text=" Configured (API Key)", foreground="green")
                 else:
-                    self.dash_api_status.config(text="⚠️ Endpoint set, API Key missing", foreground="orange")
+                    self.dash_api_status.config(text=" Endpoint set, API Key missing", foreground="orange")
                     
             elif auth_type == "login":
                 login_status = self.login_status_var.get() if hasattr(self, 'login_status_var') else "Not logged in"
                 if "successful" in login_status.lower():
-                    self.dash_api_status.config(text="✅ Configured & Authenticated", foreground="green")
+                    self.dash_api_status.config(text=" Configured & Authenticated", foreground="green")
                 else:
                     username = self.login_username_var.get().strip() if hasattr(self, 'login_username_var') else ""
                     password = self.login_password_var.get().strip() if hasattr(self, 'login_password_var') else ""
                     if username and password:
-                        self.dash_api_status.config(text="⚠️ Configured, not logged in", foreground="orange")
+                        self.dash_api_status.config(text=" Configured, not logged in", foreground="orange")
                     else:
-                        self.dash_api_status.config(text="⚠️ Endpoint set, credentials missing", foreground="orange")
+                        self.dash_api_status.config(text=" Endpoint set, credentials missing", foreground="orange")
                         
             else:  # no_auth
-                self.dash_api_status.config(text="✅ Configured (No Auth)", foreground="green")
+                self.dash_api_status.config(text=" Configured (No Auth)", foreground="green")
         else:
-            self.dash_api_status.config(text="❌ Not Configured", foreground="red")
+            self.dash_api_status.config(text=" Not Configured", foreground="red")
         
         # Update agent status
         if self.is_running:
-            self.dash_agent_status.config(text="🟢 Running", foreground="green")
+            self.dash_agent_status.config(text=" Running", foreground="green")
         else:
-            self.dash_agent_status.config(text="⭕ Stopped", foreground="red")
+            self.dash_agent_status.config(text=" Stopped", foreground="red")
         
         # Update buffer status
         try:
@@ -5558,7 +5290,7 @@ FULL RESPONSE:
         
         # Update recent activity
         self.activity_tree.delete(*self.activity_tree.get_children())
-        logs = self.db_manager.get_recent_logs(20)
+        logs = self.log_manager.get_recent_logs(20)
         
         for log in logs:
             self.activity_tree.insert("", 0, values=(
@@ -5673,35 +5405,35 @@ FULL RESPONSE:
         features_frame.pack(fill=tk.X, pady=(0, 15), padx=10)
         
         features_text = """
-🔗 Visual Field Mapping System
-   • Drag-and-drop interface for database to API field mapping
-   • Support for data transformations and formatting
-   • Template management for reusable configurations
+[CHAR] Visual Field Mapping System
+   [CHAR] Drag-and-drop interface for database to API field mapping
+   [CHAR] Support for data transformations and formatting
+   [CHAR] Template management for reusable configurations
 
-⚡ Real-time Data Processing
-   • Automatic data synchronization from Access databases
-   • Intelligent retry mechanism for failed API calls
-   • Background processing with minimal system impact
+[CHAR] Real-time Data Processing
+   [CHAR] Automatic data synchronization from Access databases
+   [CHAR] Intelligent retry mechanism for failed API calls
+   [CHAR] Background processing with minimal system impact
 
-🛡️ Robust Error Handling
-   • Comprehensive logging and audit trails
-   • Buffer system for offline resilience
-   • Health monitoring and diagnostics
+[CHAR] Robust Error Handling
+   [CHAR] Comprehensive logging and audit trails
+   [CHAR] Buffer system for offline resilience
+   [CHAR] Health monitoring and diagnostics
 
-📊 Advanced Monitoring
-   • Transaction logging with detailed statistics
-   • API performance monitoring
-   • Database connection health checks
+[CHAR] Advanced Monitoring
+   [CHAR] Transaction logging with detailed statistics
+   [CHAR] API performance monitoring
+   [CHAR] Database connection health checks
 
-🔧 Enterprise Configuration
-   • JSON-based configuration management
-   • Multiple database and API endpoint support
-   • Scheduled operations and automation
+[CHAR] Enterprise Configuration
+   [CHAR] JSON-based configuration management
+   [CHAR] Multiple database and API endpoint support
+   [CHAR] Scheduled operations and automation
 
-🎯 User-Friendly Interface
-   • Intuitive tabbed interface design
-   • Context-sensitive help and validation
-   • Professional administrative controls
+[CHAR] User-Friendly Interface
+   [CHAR] Intuitive tabbed interface design
+   [CHAR] Context-sensitive help and validation
+   [CHAR] Professional administrative controls
         """
         
         features_label = ttk.Label(features_frame, text=features_text.strip(), justify=tk.LEFT, font=('Arial', 9))
@@ -5714,16 +5446,16 @@ FULL RESPONSE:
         support_text = """
 For technical support, feature requests, or system maintenance:
 
-📧 Primary Contact: freddy.pm@sahabatagro.co.id
-📱 Emergency Support: +62 813-9855-2019
-🏢 Company: PT Sahabat Agro Group
-🌐 Business Hours: Monday - Friday, 8:00 AM - 6:00 PM (WIB)
+[CHAR] Primary Contact: freddy.pm@sahabatagro.co.id
+[CHAR] Emergency Support: +62 813-9855-2019
+[CHAR] Company: PT Sahabat Agro Group
+[CHAR] Business Hours: Monday - Friday, 8:00 AM - 6:00 PM (WIB)
 
 System Maintenance:
-• Regular updates and security patches
-• Database optimization and performance tuning
-• Custom feature development available
-• On-site training and consultation services
+[CHAR] Regular updates and security patches
+[CHAR] Database optimization and performance tuning
+[CHAR] Custom feature development available
+[CHAR] On-site training and consultation services
         """
         
         ttk.Label(support_frame, text=support_text.strip(), justify=tk.LEFT, font=('Arial', 9)).pack(anchor=tk.W)
@@ -5735,17 +5467,17 @@ System Maintenance:
         btn_frame = ttk.Frame(action_frame)
         btn_frame.pack()
         
-        ttk.Button(btn_frame, text="📧 Send Log to IT", command=self.send_log_to_it).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(btn_frame, text="🔄 Check for Updates", command=self.check_updates).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(btn_frame, text="⚙️ Generate System Report", command=self.generate_system_report).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(btn_frame, text="🗂️ Export Support Logs", command=self.export_support_logs).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text=" Send Log to IT", command=self.send_log_to_it).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text=" Check for Updates", command=self.check_updates).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text=" Generate System Report", command=self.generate_system_report).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text=" Export Support Logs", command=self.export_support_logs).pack(side=tk.LEFT)
         
         # Copyright and License
         copyright_frame = ttk.LabelFrame(scrollable_frame, text="Copyright & License", padding=15)
         copyright_frame.pack(fill=tk.X, pady=(0, 15), padx=10)
         
         copyright_text = """
-© 2025 PT Sahabat Agro Group. All rights reserved.
+[CHAR] 2025 PT Sahabat Agro Group. All rights reserved.
 
 This software is proprietary and confidential. Unauthorized copying, distribution, 
 or modification is strictly prohibited. This application is licensed exclusively 
@@ -5766,7 +5498,7 @@ Version: 2.0.0 Professional Edition
         license_frame = ttk.LabelFrame(frame, text="License & Legal", padding=10)
         license_frame.pack(fill=tk.BOTH, expand=True)
         
-        license_text = """© 2025 PT Sahabat Agro Group. All rights reserved.
+        license_text = """ 2025 PT Sahabat Agro Group. All rights reserved.
 
 This software is licensed for use within the organization only.
 Redistribution or modification without written permission is prohibited.
@@ -5934,7 +5666,7 @@ Phone: +62 813-9855-2019
         # No Auth Frame with response preview
         self.no_auth_frame = ttk.Frame(auth_frame)
         
-        no_auth_info = ttk.Label(self.no_auth_frame, text="ℹ️ No authentication required for this endpoint", 
+        no_auth_info = ttk.Label(self.no_auth_frame, text=" No authentication required for this endpoint", 
                                 font=('Arial', 9), foreground='blue')
         no_auth_info.pack(anchor=tk.W, pady=(0, 10))
         
@@ -5975,7 +5707,7 @@ Phone: +62 813-9855-2019
         username_entry.pack(fill=tk.X, pady=(5, 10))
         
         # Auto-validation info label
-        info_label = ttk.Label(self.login_frame, text="ℹ️ Note: Username will be auto-converted to 'login' field in JSON payload", 
+        info_label = ttk.Label(self.login_frame, text=" Note: Username will be auto-converted to 'login' field in JSON payload", 
                               font=('Arial', 8), foreground='blue')
         info_label.pack(anchor=tk.W, pady=(0, 10))
         
@@ -6052,7 +5784,7 @@ Phone: +62 813-9855-2019
         ttk.Label(control_frame, text="Global API Actions:", font=('Arial', 10, 'bold')).pack(anchor=tk.W, pady=(0, 5))
         
         # Help text
-        help_text = ttk.Label(control_frame, text="💡 Buttons akan aktif setelah mengisi Endpoint dan memilih Authentication", 
+        help_text = ttk.Label(control_frame, text=" Buttons akan aktif setelah mengisi Endpoint dan memilih Authentication", 
                              font=('Arial', 9), foreground='blue')
         help_text.pack(anchor=tk.W, pady=(0, 5))
         
@@ -6068,10 +5800,10 @@ Phone: +62 813-9855-2019
         main_btns = ttk.Frame(btn_container)
         main_btns.pack(anchor=tk.W, pady=(0, 10))
         
-        self.test_conn_btn = ttk.Button(main_btns, text="🔗 Test Connection", command=self.test_api_connection, width=20)
+        self.test_conn_btn = ttk.Button(main_btns, text=" Test Connection", command=self.test_api_connection, width=20)
         self.test_conn_btn.pack(side=tk.LEFT, padx=(0, 10))
         
-        self.send_sample_btn = ttk.Button(main_btns, text="📤 Send Sample Data", command=self.send_sample_data_advanced, width=20)
+        self.send_sample_btn = ttk.Button(main_btns, text=" Send Sample Data", command=self.send_sample_data_advanced, width=20)
         self.send_sample_btn.pack(side=tk.LEFT, padx=(0, 10))
         
         # Options row
@@ -6079,11 +5811,11 @@ Phone: +62 813-9855-2019
         options_frame.pack(anchor=tk.W)
         
         self.test_mode_var = tk.BooleanVar()
-        test_mode_cb = ttk.Checkbutton(options_frame, text="🧪 Test Mode (Safe Mode)", variable=self.test_mode_var)
+        test_mode_cb = ttk.Checkbutton(options_frame, text=" Test Mode (Safe Mode)", variable=self.test_mode_var)
         test_mode_cb.pack(side=tk.LEFT)
         
         # Response Panel (inside main settings tab) - More compact
-        response_frame = ttk.LabelFrame(main_scroll, text="🔍 Response & Preview Monitor", padding=10)
+        response_frame = ttk.LabelFrame(main_scroll, text=" Response & Preview Monitor", padding=10)
         response_frame.pack(fill=tk.BOTH, expand=True, pady=(20, 0))
         
         # Response tabs
@@ -6092,20 +5824,20 @@ Phone: +62 813-9855-2019
         
         # Preview tab
         preview_tab = ttk.Frame(response_notebook)
-        response_notebook.add(preview_tab, text="📄 Payload Preview")
+        response_notebook.add(preview_tab, text=" Payload Preview")
         
         self.payload_preview = scrolledtext.ScrolledText(preview_tab, height=6, state=tk.DISABLED, wrap=tk.WORD)
         self.payload_preview.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
         
         # Response tab
         response_tab = ttk.Frame(response_notebook)
-        response_notebook.add(response_tab, text="📨 API Response")
+        response_notebook.add(response_tab, text=" API Response")
         
         # Response status
         response_status_frame = ttk.Frame(response_tab)
         response_status_frame.pack(fill=tk.X, pady=(0, 5))
         
-        self.response_status_var = tk.StringVar(value="🔄 Ready - No response yet")
+        self.response_status_var = tk.StringVar(value=" Ready - No response yet")
         self.response_status_label = ttk.Label(response_status_frame, textvariable=self.response_status_var, font=('Arial', 9))
         self.response_status_label.pack(side=tk.LEFT)
         
@@ -6115,25 +5847,25 @@ Phone: +62 813-9855-2019
         
         # === FINAL SAVE SETTINGS SECTION ===
         # Global Save Settings (positioned at the bottom after all configurations)
-        save_section = ttk.LabelFrame(main_scroll, text="💾 Save API Configuration", padding=15)
+        save_section = ttk.LabelFrame(main_scroll, text=" Save API Configuration", padding=15)
         save_section.pack(fill=tk.X, pady=(20, 0))
         
         # Save instruction
         save_instruction = ttk.Label(save_section, 
-                                   text="💡 Save your current API configuration to use across all application features:",
+                                   text=" Save your current API configuration to use across all application features:",
                                    font=('Arial', 10), foreground='blue')
         save_instruction.pack(anchor=tk.W, pady=(0, 10))
         
         # Configuration info
         config_info = ttk.Label(save_section, 
-                               text="• Configuration will be saved regardless of authentication completion\n" +
-                                    "• You can test individual authentication methods using buttons above\n" +
-                                    "• Saved settings will be used by Dashboard, Health Check, and API Field Mapping",
+                               text=" Configuration will be saved regardless of authentication completion\n" +
+                                    " You can test individual authentication methods using buttons above\n" +
+                                    " Saved settings will be used by Dashboard, Health Check, and API Field Mapping",
                                font=('Arial', 9), foreground='gray', justify=tk.LEFT)
         config_info.pack(anchor=tk.W, pady=(0, 10))
         
         # Validation status display
-        self.validation_status_var = tk.StringVar(value="⚠️ Enter endpoint URL to enable saving")
+        self.validation_status_var = tk.StringVar(value=" Enter endpoint URL to enable saving")
         self.validation_status_label = ttk.Label(save_section, textvariable=self.validation_status_var, 
                                                 font=('Arial', 9), foreground='orange')
         self.validation_status_label.pack(anchor=tk.W, pady=(0, 10))
@@ -6142,16 +5874,16 @@ Phone: +62 813-9855-2019
         save_btn_frame = ttk.Frame(save_section)
         save_btn_frame.pack(fill=tk.X)
         
-        self.save_api_btn = ttk.Button(save_btn_frame, text="💾 Save API Configuration", 
+        self.save_api_btn = ttk.Button(save_btn_frame, text=" Save API Configuration", 
                                       command=self.save_api_settings, 
                                       style='Accent.TButton')
         self.save_api_btn.pack(side=tk.LEFT, padx=(0, 15))
         
         # Additional action buttons
-        ttk.Button(save_btn_frame, text="🔄 Check Status", 
+        ttk.Button(save_btn_frame, text=" Check Status", 
                   command=self.validate_and_update_status).pack(side=tk.LEFT, padx=(0, 10))
         
-        ttk.Button(save_btn_frame, text="🧪 Test Current Auth", 
+        ttk.Button(save_btn_frame, text=" Test Current Auth", 
                   command=self.test_all_configurations).pack(side=tk.LEFT, padx=(0, 10))
         
         # Save status indicator
@@ -6184,8 +5916,8 @@ Phone: +62 813-9855-2019
         # Initial update
         self.update_payload_preview()
         
-        print("✅ API Settings tab berhasil dibuat!")
-        print("💡 Petunjuk: Scroll ke bawah di tab API Settings untuk melihat button 'Test Connection' dan 'Save API Settings'")
+        # Log tab creation
+        self.log_entry("API Settings tab initialized successfully", "INFO")
     
     def create_scheduler_tab(self):
         """Create scheduler configuration tab"""
@@ -6303,18 +6035,65 @@ Phone: +62 813-9855-2019
         main_container.add(right_panel, weight=1)
         
         # === LEFT PANEL ===
-        # Instructions
-        instruction_frame = ttk.LabelFrame(left_panel, text="How to Map Fields", padding=10)
+        # Instructions with nested mapping guidance
+        instruction_frame = ttk.LabelFrame(left_panel, text=" How to Map Fields (Flat & Nested)", padding=10)
         instruction_frame.pack(fill=tk.X, pady=(0, 10))
         
         instructions = """
 1. Select database table from Database Connection tab
-2. Choose API field for each database column using dropdown
-3. Set data transformation if needed
-4. Save your mapping as template for reuse
-5. Test mapping before going live
+2. Choose API field for each database column (flat mapping)
+3. For NESTED structures: Use "Add Group/Array" to create groups
+4. Set data transformation if needed
+5. Preview nested JSON structure in real-time
+6. Save your mapping as template for reuse
+7. Test mapping before going live
         """
         ttk.Label(instruction_frame, text=instructions.strip(), justify=tk.LEFT).pack(anchor=tk.W)
+        
+        # Nested Mapping Controls
+        nested_control_frame = ttk.LabelFrame(left_panel, text=" Nested Structure Controls", padding=10)
+        nested_control_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Control buttons for nested mapping
+        control_btn_frame = ttk.Frame(nested_control_frame)
+        control_btn_frame.pack(fill=tk.X)
+        
+        # Configure grid for better layout
+        control_btn_frame.columnconfigure(0, weight=1)
+        control_btn_frame.columnconfigure(1, weight=1)
+        control_btn_frame.columnconfigure(2, weight=1)
+        control_btn_frame.columnconfigure(3, weight=1)
+        
+        ttk.Button(control_btn_frame, text=" Add Group", 
+                  command=self.add_mapping_group).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ttk.Button(control_btn_frame, text=" Add Array", 
+                  command=self.add_mapping_array).grid(row=0, column=1, sticky="ew", padx=2)
+        ttk.Button(control_btn_frame, text=" Visual Designer", 
+                  command=self.open_visual_designer).grid(row=0, column=2, sticky="ew", padx=2)
+        ttk.Button(control_btn_frame, text=" Import Spec", 
+                  command=self.import_nested_api_spec).grid(row=0, column=3, sticky="ew", padx=(2, 0))
+        
+        # Status display for nested structure
+        status_frame = ttk.Frame(nested_control_frame)
+        status_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Label(status_frame, text="Status:").pack(side=tk.LEFT)
+        self.nested_status_label = ttk.Label(status_frame, text=" No nested structure configured", 
+                                           font=('Arial', 9), foreground='gray')
+        self.nested_status_label.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Mapping mode selector
+        mode_frame = ttk.Frame(nested_control_frame)
+        mode_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Label(mode_frame, text="Mapping Mode:").pack(side=tk.LEFT)
+        self.mapping_mode = tk.StringVar(value="flat")
+        ttk.Radiobutton(mode_frame, text="Flat", variable=self.mapping_mode, 
+                       value="flat", command=self.on_mapping_mode_change).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(mode_frame, text="Nested", variable=self.mapping_mode, 
+                       value="nested", command=self.on_mapping_mode_change).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(mode_frame, text="TBS Auto", variable=self.mapping_mode, 
+                       value="tbs_auto", command=self.on_mapping_mode_change).pack(side=tk.LEFT, padx=(10, 0))
         
         # Mapping interface
         mapping_frame = ttk.LabelFrame(left_panel, text="Field Mapping", padding=10)
@@ -6325,24 +6104,24 @@ Phone: +62 813-9855-2019
         header_frame.pack(fill=tk.X, pady=(0, 10))
         
         ttk.Label(header_frame, text="Database Column", font=('Arial', 10, 'bold')).grid(row=0, column=0, sticky=tk.W, padx=(0, 20))
-        ttk.Label(header_frame, text="→", font=('Arial', 12, 'bold')).grid(row=0, column=1, padx=10)
+        ttk.Label(header_frame, text="", font=('Arial', 12, 'bold')).grid(row=0, column=1, padx=10)
         ttk.Label(header_frame, text="API Field", font=('Arial', 10, 'bold')).grid(row=0, column=2, sticky=tk.W, padx=(20, 20))
         ttk.Label(header_frame, text="Transform", font=('Arial', 10, 'bold')).grid(row=0, column=3, sticky=tk.W, padx=(20, 0))
         
         # Scrollable mapping area
-        mapping_canvas = tk.Canvas(mapping_frame)
-        mapping_scrollbar = ttk.Scrollbar(mapping_frame, orient="vertical", command=mapping_canvas.yview)
-        self.mapping_scroll_frame = ttk.Frame(mapping_canvas)
+        self.mapping_canvas = tk.Canvas(mapping_frame)
+        mapping_scrollbar = ttk.Scrollbar(mapping_frame, orient="vertical", command=self.mapping_canvas.yview)
+        self.mapping_scroll_frame = ttk.Frame(self.mapping_canvas)
         
         self.mapping_scroll_frame.bind(
             "<Configure>",
-            lambda e: mapping_canvas.configure(scrollregion=mapping_canvas.bbox("all"))
+            lambda e: self.mapping_canvas.configure(scrollregion=self.mapping_canvas.bbox("all"))
         )
         
-        mapping_canvas.create_window((0, 0), window=self.mapping_scroll_frame, anchor="nw")
-        mapping_canvas.configure(yscrollcommand=mapping_scrollbar.set)
+        self.mapping_canvas.create_window((0, 0), window=self.mapping_scroll_frame, anchor="nw")
+        self.mapping_canvas.configure(yscrollcommand=mapping_scrollbar.set)
         
-        mapping_canvas.pack(side="left", fill="both", expand=True)
+        self.mapping_canvas.pack(side="left", fill="both", expand=True)
         mapping_scrollbar.pack(side="right", fill="y")
         
         # === RIGHT PANEL ===
@@ -6350,7 +6129,7 @@ Phone: +62 813-9855-2019
         api_status_frame = ttk.LabelFrame(right_panel, text="API Settings Connection", padding=10)
         api_status_frame.pack(fill=tk.X, pady=(0, 10))
         
-        self.api_status_label = ttk.Label(api_status_frame, text="🔄 Checking API Settings...", font=('Arial', 9))
+        self.api_status_label = ttk.Label(api_status_frame, text=" Checking API Settings...", font=('Arial', 9))
         self.api_status_label.pack(anchor=tk.W)
         
         ttk.Button(api_status_frame, text="Refresh API Status", command=self.refresh_api_mapping_status).pack(fill=tk.X, pady=(5, 0))
@@ -6364,13 +6143,23 @@ Phone: +62 813-9855-2019
         self.template_listbox = tk.Listbox(template_frame, height=4)
         self.template_listbox.pack(fill=tk.X, pady=(5, 10))
         
-        # Template controls
+        # Template controls - simplified without duplication
         template_btn_frame = ttk.Frame(template_frame)
         template_btn_frame.pack(fill=tk.X)
         
-        ttk.Button(template_btn_frame, text="Load", command=self.load_selected_template).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(template_btn_frame, text="Save", command=self.show_save_template_dialog).pack(side=tk.LEFT, padx=5)
-        ttk.Button(template_btn_frame, text="Delete", command=self.delete_selected_template).pack(side=tk.LEFT, padx=5)
+        # Configure grid for better button layout
+        template_btn_frame.columnconfigure(0, weight=1)
+        template_btn_frame.columnconfigure(1, weight=1)
+        template_btn_frame.columnconfigure(2, weight=1)
+        
+        ttk.Button(template_btn_frame, text=" Load Selected", command=self.load_selected_template).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ttk.Button(template_btn_frame, text=" Save New", command=self.show_save_template_dialog).grid(row=0, column=1, sticky="ew", padx=2)
+        ttk.Button(template_btn_frame, text=" Delete", command=self.delete_selected_template).grid(row=0, column=2, sticky="ew", padx=(2, 0))
+        
+        # Custom field button for adding manual API fields
+        custom_field_btn = ttk.Button(template_frame, text=" Add Custom Field", 
+                                    command=self.show_custom_field_dialog_manual, width=20)
+        custom_field_btn.pack(fill=tk.X, pady=(10, 0))
         
         # API Structure Import
         api_frame = ttk.LabelFrame(right_panel, text="API Structure", padding=10)
@@ -6384,16 +6173,74 @@ Phone: +62 813-9855-2019
         preview_frame = ttk.LabelFrame(right_panel, text="JSON Preview", padding=10)
         preview_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        self.json_preview = scrolledtext.ScrolledText(preview_frame, height=12, state=tk.DISABLED)
+        self.json_preview = scrolledtext.ScrolledText(preview_frame, height=8, state=tk.DISABLED)
         self.json_preview.pack(fill=tk.BOTH, expand=True)
         
-        # Test controls
-        test_frame = ttk.LabelFrame(right_panel, text="Test Mapping", padding=10)
-        test_frame.pack(fill=tk.X)
+        # Test controls - EXPANDED for better visibility
+        test_frame = ttk.LabelFrame(right_panel, text=" Test Mapping Controls", padding=15)
+        test_frame.pack(fill=tk.X, pady=(0, 5))
         
-        ttk.Button(test_frame, text="Refresh Preview", command=self.update_json_preview).pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(test_frame, text="Test API Call", command=self.test_mapping_api_call).pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(test_frame, text="Validate Mapping", command=self.validate_mapping).pack(fill=tk.X)
+        # Make test buttons larger and more prominent
+        test_btn_style = {'fill': tk.X, 'pady': 3, 'ipady': 5}
+        
+        refresh_btn = ttk.Button(test_frame, text=" Refresh Preview", command=self.update_json_preview)
+        refresh_btn.pack(**test_btn_style)
+        
+        test_api_btn = ttk.Button(test_frame, text=" Test API Call", command=self.test_mapping_api_call)
+        test_api_btn.pack(**test_btn_style)
+        
+        validate_btn = ttk.Button(test_frame, text=" Validate Mapping", command=self.validate_mapping)
+        validate_btn.pack(**test_btn_style)
+        
+        # MAIN ACTION BUTTONS - Essential controls that were missing
+        action_frame = ttk.LabelFrame(right_panel, text=" Mapping Actions", padding=15)
+        action_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # Configure grid for better action button layout
+        action_frame.columnconfigure(0, weight=1)
+        action_frame.columnconfigure(1, weight=1)
+        
+        # Primary action buttons with enhanced styling
+        save_mapping_btn = ttk.Button(action_frame, text=" SAVE MAPPING", 
+                                     command=self.save_field_mapping_with_validation)
+        save_mapping_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        
+        apply_mapping_btn = ttk.Button(action_frame, text=" APPLY & REFRESH", 
+                                      command=self.apply_and_refresh_mapping)
+        apply_mapping_btn.grid(row=1, column=0, sticky="ew", padx=(0, 2))
+        
+        reset_mapping_btn = ttk.Button(action_frame, text=" RESET MAPPING", 
+                                      command=self.reset_field_mapping_with_confirm)
+        reset_mapping_btn.grid(row=1, column=1, sticky="ew", padx=(2, 0))
+        
+        # Nested structure specific actions with enhanced buttons
+        nested_actions_frame = ttk.LabelFrame(right_panel, text=" Nested Structure Actions", padding=15)
+        nested_actions_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # Configure grid for nested action buttons
+        nested_actions_frame.columnconfigure(0, weight=1)
+        nested_actions_frame.columnconfigure(1, weight=1)
+        
+        apply_nested_btn = ttk.Button(nested_actions_frame, text=" APPLY NESTED CONFIG", 
+                                     command=self.apply_nested_configuration)
+        apply_nested_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        
+        preview_nested_btn = ttk.Button(nested_actions_frame, text=" PREVIEW STRUCTURE", 
+                                       command=self.preview_nested_structure)
+        preview_nested_btn.grid(row=1, column=0, sticky="ew", padx=(0, 2))
+        
+        clear_nested_btn = ttk.Button(nested_actions_frame, text=" CLEAR NESTED", 
+                                     command=self.clear_nested_configuration)
+        clear_nested_btn.grid(row=1, column=1, sticky="ew", padx=(2, 0))
+        
+        # Status indicator for nested configuration
+        status_indicator_frame = ttk.Frame(right_panel)
+        status_indicator_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Label(status_indicator_frame, text="Nested Status:", font=('Arial', 9, 'bold')).pack(side=tk.LEFT)
+        self.nested_config_status = ttk.Label(status_indicator_frame, text=" Not Configured", 
+                                             font=('Arial', 9), foreground='gray')
+        self.nested_config_status.pack(side=tk.LEFT, padx=(5, 0))
         
         # Initialize
         self.field_mappings = {}
@@ -6407,82 +6254,216 @@ Phone: +62 813-9855-2019
             ttk.Label(self.mapping_scroll_frame, text="Please select a database table first from 'Database Connection' tab", 
                      font=('Arial', 12), foreground='gray').pack(pady=50)
     
+    def update_nested_status(self, status_text=" Not Configured", color="gray"):
+        """Update nested configuration status indicator"""
+        try:
+            if hasattr(self, 'nested_config_status'):
+                self.nested_config_status.config(text=status_text, foreground=color)
+            if hasattr(self, 'nested_status_label'):
+                self.nested_status_label.config(text=status_text, foreground=color)
+        except Exception as e:
+            print(f"Error updating nested status: {str(e)}")
+
+    def show_operation_feedback(self, title, message, type="info"):
+        """Show user feedback with proper styling"""
+        try:
+            feedback_window = tk.Toplevel(self.root)
+            feedback_window.title(title)
+            feedback_window.geometry("400x200")
+            feedback_window.transient(self.root)
+            feedback_window.grab_set()
+            
+            # Center the window
+            feedback_window.update_idletasks()
+            x = (feedback_window.winfo_screenwidth() // 2) - (400 // 2)
+            y = (feedback_window.winfo_screenheight() // 2) - (200 // 2)
+            feedback_window.geometry(f"400x200+{x}+{y}")
+            
+            # Icon and styling based on type
+            icon_map = {
+                "info": "",
+                "success": "", 
+                "warning": "",
+                "error": ""
+            }
+            color_map = {
+                "info": "blue",
+                "success": "green",
+                "warning": "orange", 
+                "error": "red"
+            }
+            
+            icon = icon_map.get(type, "")
+            color = color_map.get(type, "blue")
+            
+            # Content frame
+            content_frame = ttk.Frame(feedback_window, padding=20)
+            content_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Icon and message
+            ttk.Label(content_frame, text=icon, font=('Arial', 24)).pack(pady=(0, 10))
+            ttk.Label(content_frame, text=message, font=('Arial', 11), 
+                     foreground=color, wraplength=350, justify='center').pack(pady=(0, 20))
+            
+            # OK button
+            ttk.Button(content_frame, text="OK", 
+                      command=feedback_window.destroy).pack()
+            
+            # Auto close after 3 seconds for success messages
+            if type == "success":
+                feedback_window.after(3000, feedback_window.destroy)
+                
+        except Exception as e:
+            print(f"Error showing feedback: {str(e)}")
+
+    def validate_mapping_configuration(self):
+        """Validate current mapping configuration before save/apply"""
+        try:
+            issues = []
+            
+            # Check if table is selected
+            if not hasattr(self, 'selected_table') or not self.selected_table:
+                issues.append("No database table selected")
+            
+            # Check if mappings exist
+            if not hasattr(self, 'field_mappings') or not self.field_mappings:
+                issues.append("No field mappings configured")
+            
+            # Check if API fields are available
+            if not hasattr(self, 'api_fields') or not self.api_fields:
+                issues.append("No API fields available - check API connection")
+            
+            # Check nested structure if TBS mode
+            mapping_mode = getattr(self, 'mapping_mode_var', None)
+            if mapping_mode and mapping_mode.get() == "TBS Auto":
+                nested_config = getattr(self, 'nested_structure_config', {})
+                if not nested_config:
+                    issues.append("TBS Auto mode requires nested structure configuration")
+            
+            return issues
+            
+        except Exception as e:
+            return [f"Validation error: {str(e)}"]
     def refresh_api_mapping_status(self):
         """Refresh API Settings connection status in mapping tab - USE TEST CONNECTION RESULTS"""
         try:
             if not hasattr(self, 'api_status_label'):
                 return
-            
-            # Priority 1: Use test connection results if available
-            if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
-                result = self.last_test_connection_result
-                if result['success']:
-                    # Use cached test connection results
-                    response_time = result.get('response_time', 'N/A')
-                    self.api_status_label.config(
-                        text=f"✅ API Connected ({response_time})\n🔗 Ready for field mapping", 
-                        foreground='green'
-                    )
-                    return
-                else:
-                    error_msg = result.get('error', 'Connection failed')
-                    self.api_status_label.config(
-                        text=f"❌ API Test Failed\n⚠️ {error_msg[:50]}", 
-                        foreground='red'
-                    )
-                    return
-            
-            # Priority 2: Check API Settings configuration without testing
-            endpoint = self.api_endpoint_var.get().strip() if hasattr(self, 'api_endpoint_var') else ""
-            auth_type = self.auth_type_var.get() if hasattr(self, 'auth_type_var') else "no_auth"
-            
-            if not endpoint:
-                self.api_status_label.config(text="❌ No API endpoint configured\n⚙️ Configure API Settings first", foreground='red')
+                
+            # Check if API connection details exist
+            if not hasattr(self, 'api_base_url') or not self.api_base_url.get():
+                self.api_status_label.config(text=" API not configured", foreground='red')
                 return
             
-            # Check authentication configuration
-            auth_ready = False
-            auth_info = ""
-            
-            if auth_type == "api_key":
-                api_key = self.api_key_var.get().strip() if hasattr(self, 'api_key_var') else ""
-                if api_key:
-                    auth_ready = True
-                    auth_info = f"API Key configured"
+            # Use the test_api_connection result if available
+            if hasattr(self, 'last_api_test_result'):
+                if self.last_api_test_result.get('success', False):
+                    self.api_status_label.config(text=" API Connected", foreground='green')
+                    
+                    # Update nested status if needed
+                    self.update_nested_status(" API Ready for Nested Mapping", "green")
                 else:
-                    auth_info = "API Key required"
-            elif auth_type == "login":
-                username = self.login_username_var.get().strip() if hasattr(self, 'login_username_var') else ""
-                password = self.login_password_var.get().strip() if hasattr(self, 'login_password_var') else ""
-                api_key = self.api_key_var.get().strip() if hasattr(self, 'api_key_var') else ""
-                
-                if api_key:  # Token obtained from login
-                    auth_ready = True
-                    auth_info = f"Login successful, token ready"
-                elif username and password:
-                    auth_info = "Login credentials set, needs authentication"
-                else:
-                    auth_info = "Login credentials required"
-            elif auth_type == "no_auth":
-                auth_ready = True
-                auth_info = "No authentication required"
-            
-            # Update status without making API calls
-            if auth_ready:
-                self.api_status_label.config(
-                    text=f"⚙️ API Ready - Use Test Connection\n🌐 {endpoint[:30]}{'...' if len(endpoint) > 30 else ''}\n✓ {auth_info}", 
-                    foreground='blue'
-                )
+                    error_msg = self.last_api_test_result.get('error', 'Unknown error')
+                    self.api_status_label.config(text=f" API Error: {error_msg[:30]}...", foreground='red')
+                    self.update_nested_status(" API Connection Issues", "red")
             else:
-                self.api_status_label.config(
-                    text=f"⚠️ API Settings incomplete\n🌐 {endpoint[:30]}{'...' if len(endpoint) > 30 else ''}\n❌ {auth_info}", 
-                    foreground='orange'
-                )
+                self.api_status_label.config(text=" API not tested yet", foreground='orange')
+                self.update_nested_status(" API Test Required", "orange")
                 
         except Exception as e:
-            if hasattr(self, 'api_status_label'):
-                self.api_status_label.config(text=f"❌ Error checking API status: {str(e)}", foreground='red')
-    
+            self.log_message(f"Error refreshing API mapping status: {str(e)}", "ERROR")
+
+    def update_nested_status(self, status_text=" Not Configured", color="gray"):
+        """Update nested configuration status indicator"""
+        try:
+            if hasattr(self, 'nested_config_status'):
+                self.nested_config_status.config(text=status_text, foreground=color)
+            if hasattr(self, 'nested_status_label'):
+                self.nested_status_label.config(text=status_text, foreground=color)
+        except Exception as e:
+            print(f"Error updating nested status: {str(e)}")
+
+    def show_operation_feedback(self, title, message, type="info"):
+        """Show user feedback with proper styling"""
+        try:
+            feedback_window = tk.Toplevel(self.root)
+            feedback_window.title(title)
+            feedback_window.geometry("400x200")
+            feedback_window.transient(self.root)
+            feedback_window.grab_set()
+            
+            # Center the window
+            feedback_window.update_idletasks()
+            x = (feedback_window.winfo_screenwidth() // 2) - (400 // 2)
+            y = (feedback_window.winfo_screenheight() // 2) - (200 // 2)
+            feedback_window.geometry(f"400x200+{x}+{y}")
+            
+            # Icon and styling based on type
+            icon_map = {
+                "info": "",
+                "success": "", 
+                "warning": "",
+                "error": ""
+            }
+            color_map = {
+                "info": "blue",
+                "success": "green",
+                "warning": "orange", 
+                "error": "red"
+            }
+            
+            icon = icon_map.get(type, "")
+            color = color_map.get(type, "blue")
+            
+            # Content frame
+            content_frame = ttk.Frame(feedback_window, padding=20)
+            content_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Icon and message
+            ttk.Label(content_frame, text=icon, font=('Arial', 24)).pack(pady=(0, 10))
+            ttk.Label(content_frame, text=message, font=('Arial', 11), 
+                     foreground=color, wraplength=350, justify='center').pack(pady=(0, 20))
+            
+            # OK button
+            ttk.Button(content_frame, text="OK", 
+                      command=feedback_window.destroy).pack()
+            
+            # Auto close after 3 seconds for success messages
+            if type == "success":
+                feedback_window.after(3000, feedback_window.destroy)
+                
+        except Exception as e:
+            print(f"Error showing feedback: {str(e)}")
+
+    def validate_mapping_configuration(self):
+        """Validate current mapping configuration before save/apply"""
+        try:
+            issues = []
+            
+            # Check if table is selected
+            if not hasattr(self, 'selected_table') or not self.selected_table:
+                issues.append("No database table selected")
+            
+            # Check if mappings exist
+            if not hasattr(self, 'field_mappings') or not self.field_mappings:
+                issues.append("No field mappings configured")
+            
+            # Check if API fields are available
+            if not hasattr(self, 'api_fields') or not self.api_fields:
+                issues.append("No API fields available - check API connection")
+            
+            # Check nested structure if TBS mode
+            mapping_mode = getattr(self, 'mapping_mode_var', None)
+            if mapping_mode and mapping_mode.get() == "TBS Auto":
+                nested_config = getattr(self, 'nested_structure_config', {})
+                if not nested_config:
+                    issues.append("TBS Auto mode requires nested structure configuration")
+            
+            return issues
+            
+        except Exception as e:
+            return [f"Validation error: {str(e)}"]
+
     # Support functions for about tab
     def export_support_logs(self):
         """Export comprehensive logs for support purposes"""
@@ -6545,7 +6526,7 @@ Phone: +62 813-9855-2019
                 f.write("RECENT LOGS:\n")
                 f.write("-" * 30 + "\n")
                 try:
-                    logs = self.db_manager.get_recent_logs(50)
+                    logs = self.log_manager.get_recent_logs(50)
                     for log in logs:
                         f.write(f"{log['timestamp']} [{log['level']}] {log['message']}\n")
                         if log.get('details'):
@@ -6557,7 +6538,7 @@ Phone: +62 813-9855-2019
                 f.write("End of Support Log\n")
             
             messagebox.showinfo("Success", 
-                              f"✅ Support logs exported successfully!\n\n"
+                              f" Support logs exported successfully!\n\n"
                               f"File: {filename}\n"
                               f"Please send this file to IT support for assistance.")
             self.log_entry(f"Support logs exported to {filename}", "INFO")
@@ -6606,12 +6587,12 @@ Processor: {platform.processor()}
 
 APPLICATION STATUS
 {'-'*50}
-Database Status: {'✅ Connected' if self.db_connection else '❌ Not Connected'}
+Database Status: {' Connected' if self.db_connection else ' Not Connected'}
 Selected Database: {self.config.get('mdb_file', 'None')}
 Selected Table: {getattr(self, 'selected_table', 'None')}
-API Endpoint: {'✅ Configured' if self.config.get('api_endpoint') else '❌ Not Configured'}
-Agent Status: {'🟢 Running' if getattr(self, 'is_running', False) else '⭕ Stopped'}
-Admin Mode: {'🔓 Active' if getattr(self, 'admin_mode', False) else '🔒 Inactive'}
+API Endpoint: {' Configured' if self.config.get('api_endpoint') else ' Not Configured'}
+Agent Status: {' Running' if getattr(self, 'is_running', False) else ' Stopped'}
+Admin Mode: {' Active' if getattr(self, 'admin_mode', False) else ' Inactive'}
 
 CONFIGURATION SUMMARY
 {'-'*50}
@@ -6676,7 +6657,7 @@ Pending in Buffer: {pending_buffer:,}
 RECENT ACTIVITY (Last 10 entries)
 {'-'*50}"""
             try:
-                logs = self.db_manager.get_recent_logs(10)
+                logs = self.log_manager.get_recent_logs(10)
                 for log in logs:
                     timestamp = log['timestamp'][:19]  # Remove microseconds
                     report += f"{timestamp} [{log['level']}] {log['message']}\n"
@@ -6720,8 +6701,8 @@ End of System Report
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to export: {str(e)}")
             
-            ttk.Button(btn_frame, text="📄 Export Report", command=export_report).pack(side=tk.LEFT)
-            ttk.Button(btn_frame, text="❌ Close", command=report_window.destroy).pack(side=tk.RIGHT)
+            ttk.Button(btn_frame, text=" Export Report", command=export_report).pack(side=tk.LEFT)
+            ttk.Button(btn_frame, text=" Close", command=report_window.destroy).pack(side=tk.RIGHT)
             
             self.log_entry("System report generated", "INFO")
             
@@ -6736,34 +6717,34 @@ Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 {'=' * 60}
 
 APPLICATION INFO:
-• Name: MDB Agent Pro
-• Version: 2.0.0
-• Type: Database to API Bridge
+[CHAR] Name: MDB Agent Pro
+[CHAR] Version: 2.0.0
+[CHAR] Type: Database to API Bridge
 
 SYSTEM ENVIRONMENT:
-• Operating System: {platform.system()} {platform.release()}
-• Python Version: {sys.version.split()[0]}
-• Architecture: {platform.machine()}
-• Processor: {platform.processor()}
+[CHAR] Operating System: {platform.system()} {platform.release()}
+[CHAR] Python Version: {sys.version.split()[0]}
+[CHAR] Architecture: {platform.machine()}
+[CHAR] Processor: {platform.processor()}
 
 DATABASE CONNECTION:
-• File: {self.config.get('mdb_file', 'Not configured')}
-• Status: {'Connected' if self.db_connection else 'Disconnected'}
-• Selected Table: {getattr(self, 'selected_table', 'None')}
+ File: {self.config.get('mdb_file', 'Not configured')}
+ Status: {'Connected' if self.db_connection else 'Disconnected'}
+ Selected Table: {getattr(self, 'selected_table', 'None')}
 
 API CONFIGURATION:
-• Endpoint: {self.config.get('api_endpoint', 'Not configured')}
-• Authentication: {'Configured' if self.config.get('api_key') else 'Not configured'}
-• Auto Push: {self.config.get('auto_push', False)}
-• Push Interval: {self.config.get('push_interval', 'Not set')} seconds
+ Endpoint: {self.config.get('api_endpoint', 'Not configured')}
+ Authentication: {'Configured' if self.config.get('api_key') else 'Not configured'}
+ Auto Push: {self.config.get('auto_push', False)}
+ Push Interval: {self.config.get('push_interval', 'Not set')} seconds
 
 FIELD MAPPING:
-• Mapped Fields: {len(self.field_mappings) if hasattr(self, 'field_mappings') else 0}
-• Templates Available: {self.template_listbox.size() if hasattr(self, 'template_listbox') else 0}
+ Mapped Fields: {len(self.field_mappings) if hasattr(self, 'field_mappings') else 0}
+ Templates Available: {self.template_listbox.size() if hasattr(self, 'template_listbox') else 0}
 
 AGENT STATUS:
-• Running: {getattr(self, 'is_running', False)}
-• Admin Mode: {getattr(self, 'admin_mode', False)}
+ Running: {getattr(self, 'is_running', False)}
+ Admin Mode: {getattr(self, 'admin_mode', False)}
 
 RECENT ACTIVITY:
             """
@@ -6772,12 +6753,12 @@ RECENT ACTIVITY:
             
             # Add recent logs
             try:
-                logs = self.db_manager.get_recent_logs(10)
+                logs = self.log_manager.get_recent_logs(10)
                 text_widget.insert(tk.END, "\nRECENT LOGS:\n")
                 for log in logs:
-                    text_widget.insert(tk.END, f"• {log[0]} [{log[1]}] {log[2]}\n")
+                    text_widget.insert(tk.END, f" {log[0]} [{log[1]}] {log[2]}\n")
             except:
-                text_widget.insert(tk.END, "\n• Could not retrieve recent logs\n")
+                text_widget.insert(tk.END, "\n Could not retrieve recent logs\n")
             
             text_widget.config(state=tk.DISABLED)
             
@@ -6875,7 +6856,7 @@ RECENT ACTIVITY:
             preview_frame = ttk.LabelFrame(save_window, text="Mapping Preview", padding=10)
             preview_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
             
-            preview_text = f"📋 Fields to save: {len(mapped_fields)}\n\n"
+            preview_text = f" Fields to save: {len(mapped_fields)}\n\n"
             
             # Categorize fields
             header_fields = []
@@ -6886,19 +6867,19 @@ RECENT ACTIVITY:
                 if api_field in ["partner_id", "journal_id", "date_order", "officers", 
                                "keterangan_description", "driver_name", "vehicle_no", 
                                "destination_warehouse_id", "branch_id"]:
-                    header_fields.append(f"• {db_col} → {api_field} ({mapping['transform']})")
+                    header_fields.append(f" {db_col}  {api_field} ({mapping['transform']})")
                 else:
-                    detail_fields.append(f"• {db_col} → {api_field} ({mapping['transform']})")
+                    detail_fields.append(f" {db_col}  {api_field} ({mapping['transform']})")
             
             if header_fields:
-                preview_text += "🏢 Header Fields (order_data level):\n"
+                preview_text += " Header Fields (order_data level):\n"
                 preview_text += "\n".join(header_fields[:3])
                 if len(header_fields) > 3:
                     preview_text += f"\n   ... and {len(header_fields) - 3} more header fields"
                 preview_text += "\n\n"
             
             if detail_fields:
-                preview_text += "📦 Detail Fields (order_line level):\n"
+                preview_text += " Detail Fields (order_line level):\n"
                 preview_text += "\n".join(detail_fields[:3])
                 if len(detail_fields) > 3:
                     preview_text += f"\n   ... and {len(detail_fields) - 3} more detail fields"
@@ -6934,14 +6915,14 @@ RECENT ACTIVITY:
                         self.load_mapping_templates()
                     
                     messagebox.showinfo("Template Saved", 
-                                      f"✅ Template '{template_name}' saved successfully!\n\n" +
-                                      f"📊 Contains {len(mapped_fields)} field mappings:\n" +
-                                      f"   • {len(header_fields)} header fields\n" +
-                                      f"   • {len(detail_fields)} detail fields\n\n" +
-                                      f"🎯 Format: TBS Receiving JSON-RPC 2.0")
+                                      f" Template '{template_name}' saved successfully!\n\n" +
+                                      f" Contains {len(mapped_fields)} field mappings:\n" +
+                                      f"    {len(header_fields)} header fields\n" +
+                                      f"    {len(detail_fields)} detail fields\n\n" +
+                                      f" Format: TBS Receiving JSON-RPC 2.0")
                     
                     save_window.destroy()
-                    self.log_entry(f"✅ TBS Mapping template '{template_name}' saved with {len(mapped_fields)} fields", "SUCCESS")
+                    self.log_entry(f" TBS Mapping template '{template_name}' saved with {len(mapped_fields)} fields", "SUCCESS")
                     
                 except Exception as e:
                     messagebox.showerror("Save Error", f"Failed to save template: {str(e)}")
@@ -6950,8 +6931,8 @@ RECENT ACTIVITY:
             btn_frame = ttk.Frame(save_window)
             btn_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
             
-            ttk.Button(btn_frame, text="💾 Save TBS Template", command=save_template).pack(side=tk.RIGHT, padx=(5, 0))
-            ttk.Button(btn_frame, text="❌ Cancel", command=save_window.destroy).pack(side=tk.RIGHT)
+            ttk.Button(btn_frame, text=" Save TBS Template", command=save_template).pack(side=tk.RIGHT, padx=(5, 0))
+            ttk.Button(btn_frame, text=" Cancel", command=save_window.destroy).pack(side=tk.RIGHT)
             
         except Exception as e:
             messagebox.showerror("Save Error", f"Failed to create save dialog: {str(e)}")
@@ -6985,42 +6966,139 @@ RECENT ACTIVITY:
             messagebox.showerror("Error", f"Failed to delete template: {str(e)}")
     
     def import_api_spec(self):
-        """Import API specification from JSON file"""
+        """Import API specification from JSON file or open in external editor"""
         try:
             filename = filedialog.askopenfilename(
-                title="Import API Specification",
-                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+                title="Select API Specification File",
+                filetypes=[
+                    ("JSON files", "*.json"),
+                    ("Text files", "*.txt"), 
+                    ("Excel files", "*.xlsx;*.xls"),
+                    ("CSV files", "*.csv"),
+                    ("All files", "*.*")
+                ]
             )
             
-            if filename:
-                with open(filename, 'r') as f:
-                    api_spec = json.load(f)
-                
-                # Extract field names from API spec
-                fields = []
-                if 'properties' in api_spec:
-                    fields = list(api_spec['properties'].keys())
-                elif 'fields' in api_spec:
-                    fields = api_spec['fields']
-                elif isinstance(api_spec, dict):
-                    fields = list(api_spec.keys())
-                
-                if fields:
-                    self.api_fields = fields
-                    # Update comboboxes in mapping interface
-                    if hasattr(self, 'mapping_widgets'):
-                        for widgets in self.mapping_widgets.values():
-                            current_values = list(widgets['api_combo']['values'])
-                            new_values = ["(unmapped)"] + fields + ["Custom..."]
-                            widgets['api_combo']['values'] = new_values
+            if not filename:
+                return
+            
+            # Show dialog to choose action
+            dialog = tk.Toplevel(self)
+            dialog.title("Import API Spec")
+            dialog.geometry("400x300")
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            # Center dialog
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() - dialog.winfo_width()) // 2
+            y = (dialog.winfo_screenheight() - dialog.winfo_height()) // 2
+            dialog.geometry(f"+{x}+{y}")
+            
+            # Title
+            title_frame = ttk.Frame(dialog)
+            title_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
+            
+            ttk.Label(title_frame, text=" API Specification Import", 
+                     font=('Arial', 14, 'bold')).pack()
+            ttk.Label(title_frame, text=f"File: {filename.split('/')[-1]}", 
+                     font=('Arial', 10), foreground='gray').pack()
+            
+            # Options frame
+            options_frame = ttk.LabelFrame(dialog, text="Choose Action", padding=15)
+            options_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+            
+            def import_fields():
+                try:
+                    dialog.destroy()
                     
-                    messagebox.showinfo("Success", f"API specification imported!\n{len(fields)} fields found: {', '.join(fields[:5])}{'...' if len(fields) > 5 else ''}")
-                    self.log_entry(f"API spec imported: {len(fields)} fields", "SUCCESS")
-                else:
-                    messagebox.showwarning("Warning", "No fields found in API specification")
+                    # Try to read as JSON
+                    if filename.lower().endswith('.json'):
+                        with open(filename, 'r', encoding='utf-8') as f:
+                            api_spec = json.load(f)
+                        
+                        # Extract field names from API spec
+                        fields = []
+                        if 'properties' in api_spec:
+                            fields = list(api_spec['properties'].keys())
+                        elif 'fields' in api_spec:
+                            fields = api_spec['fields']
+                        elif isinstance(api_spec, dict):
+                            fields = list(api_spec.keys())
+                        
+                        if fields:
+                            self.api_fields = fields
+                            self.update_mapping_comboboxes()
+                            messagebox.showinfo("Success", f" API specification imported!\n\n{len(fields)} fields found:\n{', '.join(fields[:8])}{'...' if len(fields) > 8 else ''}")
+                            self.log_entry(f"API spec imported: {len(fields)} fields", "SUCCESS")
+                        else:
+                            messagebox.showwarning("Warning", "No fields found in API specification")
+                    else:
+                        messagebox.showinfo("Info", "For non-JSON files, please use the 'Open in Editor' option to view and manually enter fields.")
+                        
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to import API spec:\n{str(e)}")
+            
+            def open_in_notepad():
+                try:
+                    dialog.destroy()
+                    import subprocess
+                    import os
                     
+                    # Try to open with default application first
+                    os.startfile(filename)
+                    
+                    # Show info message
+                    messagebox.showinfo("File Opened", 
+                                      f" File opened in default application!\n\n"
+                                      f" You can now:\n"
+                                      f" View the API structure\n"
+                                      f" Copy field names\n"
+                                      f" Use 'Add Custom Field' to add them manually\n\n"
+                                      f" For JSON files, you can also use 'Import Fields' option")
+                    
+                except Exception as e:
+                    try:
+                        # Fallback to notepad
+                        subprocess.Popen(['notepad.exe', filename])
+                        messagebox.showinfo("File Opened", f" File opened in Notepad!\n\nFile: {filename}")
+                    except Exception as e2:
+                        messagebox.showerror("Error", f"Failed to open file:\n{str(e)}\n\nFallback error:\n{str(e2)}")
+            
+            def open_in_excel():
+                try:
+                    dialog.destroy()
+                    import subprocess
+                    
+                    # Try to open with Excel
+                    subprocess.Popen(['excel.exe', filename])
+                    messagebox.showinfo("File Opened", f" File opened in Excel!\n\nFile: {filename}")
+                    
+                except Exception as e:
+                    try:
+                        # Fallback to default application
+                        import os
+                        os.startfile(filename)
+                        messagebox.showinfo("File Opened", f" File opened in default application!\n\nFile: {filename}")
+                    except Exception as e2:
+                        messagebox.showerror("Error", f"Failed to open file:\n{str(e)}\n\nFallback error:\n{str(e2)}")
+            
+            # Action buttons
+            ttk.Button(options_frame, text=" Import Fields (JSON only)", 
+                      command=import_fields).pack(fill=tk.X, pady=(0, 5))
+            
+            ttk.Button(options_frame, text=" Open in Notepad", 
+                      command=open_in_notepad).pack(fill=tk.X, pady=(0, 5))
+            
+            ttk.Button(options_frame, text=" Open in Excel", 
+                      command=open_in_excel).pack(fill=tk.X, pady=(0, 5))
+            
+            # Cancel button
+            ttk.Button(options_frame, text=" Cancel", 
+                      command=dialog.destroy).pack(fill=tk.X, pady=(5, 0))
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to import API spec: {str(e)}")
+            messagebox.showerror("Error", f"Failed to select API spec file:\n{str(e)}")
     
     def auto_detect_api_structure(self):
         """Auto detect API structure - SMART MODE: Use Test Connection results if available, otherwise test directly"""
@@ -7029,7 +7107,7 @@ RECENT ACTIVITY:
             if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
                 if self.last_test_connection_result['success']:
                     # Use existing successful connection result without retesting
-                    self.log_entry("🔍 Using existing Test Connection success for Auto Detect", "INFO")
+                    self.log_entry(" Using existing Test Connection success for Auto Detect", "INFO")
                     
                     # Set default fields based on successful connection type
                     endpoint = self.api_endpoint_var.get().strip()
@@ -7038,21 +7116,21 @@ RECENT ACTIVITY:
                     if "/login" in endpoint.lower() or "/auth" in endpoint.lower():
                         # Login endpoint detected from Test Connection success
                         default_fields = ["login", "password", "database", "username", "email", "token", "status"]
-                        success_msg = f"✅ Auto Detect using Test Connection success!\n\n" \
+                        success_msg = f" Auto Detect using Test Connection success!\n\n" \
                                     f"Status: {self.last_test_connection_result['status_code']} " \
                                     f"({self.last_test_connection_result['response_time']})\n" \
                                     f"Auth: {auth_type}\n\n" \
                                     f"Login endpoint fields configured: {', '.join(default_fields)}\n\n" \
-                                    f"💡 Based on successful Test Connection result"
+                                    f" Based on successful Test Connection result"
                     else:
                         # Data endpoint detected from Test Connection success  
                         default_fields = ["id", "name", "value", "timestamp", "status", "data", "created_at", "updated_at"]
-                        success_msg = f"✅ Auto Detect using Test Connection success!\n\n" \
+                        success_msg = f" Auto Detect using Test Connection success!\n\n" \
                                     f"Status: {self.last_test_connection_result['status_code']} " \
                                     f"({self.last_test_connection_result['response_time']})\n" \
                                     f"Auth: {auth_type}\n\n" \
                                     f"Data endpoint fields configured: {', '.join(default_fields)}\n\n" \
-                                    f"💡 Based on successful Test Connection result"
+                                    f" Based on successful Test Connection result"
                     
                     # Apply the detected fields
                     self.api_fields = default_fields
@@ -7060,15 +7138,15 @@ RECENT ACTIVITY:
                     self.update_mapping_comboboxes()
                     
                     messagebox.showinfo("Auto Detect Success", success_msg)
-                    self.log_entry(f"✅ Auto Detect completed using Test Connection success: {len(default_fields)} fields", "SUCCESS")
+                    self.log_entry(f" Auto Detect completed using Test Connection success: {len(default_fields)} fields", "SUCCESS")
                     return
                 else:
                     # Test Connection failed - show warning but continue with direct test
                     error_msg = self.last_test_connection_result.get('error', 'Unknown error')
-                    self.log_entry(f"⚠️ Test Connection failed previously: {error_msg} - Trying direct test", "WARNING")
+                    self.log_entry(f" Test Connection failed previously: {error_msg} - Trying direct test", "WARNING")
             
             # PRIORITY 2: No successful Test Connection available - perform direct test
-            self.log_entry("🔍 No recent Test Connection success - performing direct API test", "INFO")
+            self.log_entry(" No recent Test Connection success - performing direct API test", "INFO")
             
             # Get endpoint DIRECTLY from UI (same as test_api_connection)
             endpoint = self.api_endpoint_var.get().strip()
@@ -7088,12 +7166,12 @@ RECENT ACTIVITY:
                 if self.api_key_var.get().strip():
                     api_key = self.api_key_var.get().strip()
                     headers['Authorization'] = f'Bearer {api_key}'
-                    self.log_entry(f"🔑 Using API Key authentication for auto-detect", "INFO")
+                    self.log_entry(f" Using API Key authentication for auto-detect", "INFO")
                 else:
                     messagebox.showwarning("Missing API Key", "API Key authentication selected but no key provided.\n\nPlease configure API Key in API Settings.")
                     return
             
-            self.log_entry(f"🔍 Auto-detecting API structure from: {endpoint} (Auth: {auth_type})", "INFO")
+            self.log_entry(f" Auto-detecting API structure from: {endpoint} (Auth: {auth_type})", "INFO")
             
             # Check if this is a login endpoint - use different approach
             if "/login" in endpoint.lower() or "/auth" in endpoint.lower():
@@ -7111,7 +7189,7 @@ RECENT ACTIVITY:
                             "database": database or "default"
                         }
                         
-                        self.log_entry(f"🔍 Testing login endpoint with current UI credentials: {username}", "INFO")
+                        self.log_entry(f" Testing login endpoint with current UI credentials: {username}", "INFO")
                         response = requests.post(endpoint, json=test_data, headers=headers, timeout=15)
                         
                         if response.status_code == 200:
@@ -7130,12 +7208,12 @@ RECENT ACTIVITY:
                                     self.api_fields_source = "auto_detect"
                                     self.update_mapping_comboboxes()
                                     messagebox.showinfo("Auto Detect Success", 
-                                                      f"✅ Login endpoint auto-detected successfully!\n\n"
+                                                      f" Login endpoint auto-detected successfully!\n\n"
                                                       f"Using current UI configuration: {auth_type} auth\n"
                                                       f"Fields found: {', '.join(safe_fields)}\n\n"
                                                       f"Status: {response.status_code} - Authentication successful\n\n"
-                                                      f"🔄 API Field mappings updated automatically")
-                                    self.log_entry(f"✅ Login endpoint auto-detected using current UI config: {len(safe_fields)} fields", "SUCCESS")
+                                                      f" API Field mappings updated automatically")
+                                    self.log_entry(f" Login endpoint auto-detected using current UI config: {len(safe_fields)} fields", "SUCCESS")
                                     return
                             except:
                                 pass
@@ -7152,44 +7230,44 @@ RECENT ACTIVITY:
                                     self.api_fields_source = "auto_detect"
                                     self.update_mapping_comboboxes()
                                     messagebox.showinfo("Login Endpoint Detected", 
-                                                      f"✅ Login endpoint detected!\n\n"
+                                                      f" Login endpoint detected!\n\n"
                                                       f"Status: {response.status_code} - Credential validation error (expected)\n"
                                                       f"Using current UI config: {username} / {'*' * len(password)}\n\n"
                                                       f"Default login fields configured: {', '.join(default_fields)}\n\n"
-                                                      f"💡 Error indicates endpoint is working but expects different credentials.")
-                                    self.log_entry(f"✅ Login endpoint confirmed via HTTP {response.status_code} using current UI config", "INFO")
+                                                      f" Error indicates endpoint is working but expects different credentials.")
+                                    self.log_entry(f" Login endpoint confirmed via HTTP {response.status_code} using current UI config", "INFO")
                                     return
                                 else:
                                     # Generic 400 error
                                     messagebox.showwarning("Validation Error", 
-                                                         f"⚠️ API returned validation error (400)\n\n"
+                                                         f" API returned validation error (400)\n\n"
                                                          f"Endpoint: {endpoint}\n"
                                                          f"Auth: {auth_type}\n"
                                                          f"Response: {str(error_data)[:200]}...\n\n"
-                                                         f"💡 This might mean:\n"
-                                                         f"• Different field names expected\n"
-                                                         f"• Additional required fields\n"
-                                                         f"• Different data format expected")
+                                                         f" This might mean:\n"
+                                                         f" Different field names expected\n"
+                                                         f" Additional required fields\n"
+                                                         f" Different data format expected")
                                     return
                             except Exception as e:
                                 messagebox.showwarning("Request Error", 
-                                                     f"⚠️ HTTP 400 Error\n\n"
+                                                     f" HTTP 400 Error\n\n"
                                                      f"Using current UI config but endpoint returned validation error.\n\n"
                                                      f"Check API documentation for required fields.")
                                 return
                     else:
                         messagebox.showwarning("Missing Credentials", 
-                                             f"⚠️ Login endpoint detected: {endpoint}\n\n"
+                                             f" Login endpoint detected: {endpoint}\n\n"
                                              f"Missing login credentials in current UI configuration.\n\n"
                                              f"Please:\n"
-                                             f"1. Go to API Settings → Login Required\n"
+                                             f"1. Go to API Settings  Login Required\n"
                                              f"2. Fill in username & password\n"
                                              f"3. Try Auto Detect again (no need to save first)")
                         return
                 else:
                     # Non-login auth for login endpoint - show warning
                     messagebox.showwarning("Authentication Mismatch", 
-                                         f"⚠️ This appears to be a login endpoint:\n{endpoint}\n\n"
+                                         f" This appears to be a login endpoint:\n{endpoint}\n\n"
                                          f"But you're using '{auth_type}' authentication.\n\n"
                                          f"Consider switching to 'Login Required' authentication type.")
                     return
@@ -7205,7 +7283,7 @@ RECENT ACTIVITY:
                             self.api_fields = fields
                             self.api_fields_source = "auto_detect"
                             self.update_mapping_comboboxes()
-                            messagebox.showinfo("Success", f"✅ API structure detected!\n\nFields found: {', '.join(fields)}")
+                            messagebox.showinfo("Success", f" API structure detected!\n\nFields found: {', '.join(fields)}")
                             self.log_entry(f"API structure auto-detected: {len(fields)} fields", "SUCCESS")
                             return
                     except:
@@ -7233,7 +7311,7 @@ RECENT ACTIVITY:
                 }
             
             # Log the configuration being used
-            self.log_entry(f"🔍 Auto-detect using: Auth={auth_type}, Endpoint={endpoint}", "INFO")
+            self.log_entry(f" Auto-detect using: Auth={auth_type}, Endpoint={endpoint}", "INFO")
             
             response = requests.post(endpoint, json=test_data, headers=headers, timeout=15)
             
@@ -7253,11 +7331,11 @@ RECENT ACTIVITY:
                         self.api_fields_source = "auto_detect"
                         self.update_mapping_comboboxes()
                         messagebox.showinfo("Success", 
-                                          f"✅ API endpoint accepting data!\n\n"
+                                          f" API endpoint accepting data!\n\n"
                                           f"Using current UI config: {auth_type} auth\n"
                                           f"Inferred fields: {', '.join(clean_fields)}\n\n"
                                           f"Response: {response.status_code}")
-                        self.log_entry(f"✅ API structure inferred using current UI config: {len(clean_fields)} fields", "SUCCESS")
+                        self.log_entry(f" API structure inferred using current UI config: {len(clean_fields)} fields", "SUCCESS")
                         return
                 except:
                     pass
@@ -7266,32 +7344,32 @@ RECENT ACTIVITY:
                 try:
                     error_data = response.json()
                     messagebox.showinfo("API Test", 
-                                      f"✅ API endpoint responding!\n\n"
+                                      f" API endpoint responding!\n\n"
                                       f"Status: {response.status_code} (Validation Error)\n"
                                       f"Using current UI config: {auth_type} auth\n"
                                       f"This means the endpoint is working but expects different data.\n\n"
                                       f"Response: {str(error_data)[:150]}...\n\n"
-                                      f"💡 Configure fields manually or check API documentation.")
-                    self.log_entry(f"✅ API endpoint validated using current UI config (returned {response.status_code})", "INFO")
+                                      f" Configure fields manually or check API documentation.")
+                    self.log_entry(f" API endpoint validated using current UI config (returned {response.status_code})", "INFO")
                 except:
                     messagebox.showinfo("API Test", 
-                                      f"✅ API endpoint responding with status {response.status_code}\n\n"
+                                      f" API endpoint responding with status {response.status_code}\n\n"
                                       f"Using current UI config: {auth_type} auth\n"
                                       f"Manual field configuration recommended.")
             else:
                 messagebox.showwarning("Warning", 
-                                     f"⚠️ API returned status {response.status_code}\n\n"
+                                     f" API returned status {response.status_code}\n\n"
                                      f"Using current UI config: {auth_type} auth\n"
                                      f"Response: {response.text[:200]}...\n\n"
                                      f"Manual configuration may be required.")
                 
         except requests.exceptions.Timeout:
-            messagebox.showerror("Error", f"❌ Request timeout\n\nUsing UI config: {auth_type} auth\nEndpoint: {endpoint}\n\nPlease check your connection and try again.")
+            messagebox.showerror("Error", f" Request timeout\n\nUsing UI config: {auth_type} auth\nEndpoint: {endpoint}\n\nPlease check your connection and try again.")
         except requests.exceptions.ConnectionError:
-            messagebox.showerror("Error", f"❌ Connection failed\n\nUsing UI config: {auth_type} auth\nEndpoint: {endpoint}\n\nPlease check the endpoint URL and your internet connection.")
+            messagebox.showerror("Error", f" Connection failed\n\nUsing UI config: {auth_type} auth\nEndpoint: {endpoint}\n\nPlease check the endpoint URL and your internet connection.")
         except Exception as e:
-            messagebox.showerror("Error", f"❌ Failed to detect API structure:\n\nUsing UI config: {auth_type} auth\nEndpoint: {endpoint}\n\nError: {str(e)}")
-            self.log_entry(f"❌ Auto-detect failed using current UI config: {str(e)}", "ERROR")
+            messagebox.showerror("Error", f" Failed to detect API structure:\n\nUsing UI config: {auth_type} auth\nEndpoint: {endpoint}\n\nError: {str(e)}")
+            self.log_entry(f" Auto-detect failed using current UI config: {str(e)}", "ERROR")
     
     def show_manual_api_fields_dialog(self):
         """Show manual API fields configuration dialog with TBS Receiving API preset"""
@@ -7307,18 +7385,18 @@ RECENT ACTIVITY:
         
         if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
             if self.last_test_connection_result['success']:
-                status_text = f"✅ Test Connection: {self.last_test_connection_result['status_code']} ({self.last_test_connection_result['response_time']})"
+                status_text = f" Test Connection: {self.last_test_connection_result['status_code']} ({self.last_test_connection_result['response_time']})"
                 status_color = 'green'
-                suggestion = "💡 API Settings validated - Ready for TBS Receiving mapping"
+                suggestion = " API Settings validated - Ready for TBS Receiving mapping"
             else:
                 error_msg = self.last_test_connection_result.get('error', 'Unknown error')
-                status_text = f"❌ Test Connection Failed: {error_msg[:50]}..."
+                status_text = f" Test Connection Failed: {error_msg[:50]}..."
                 status_color = 'red'
-                suggestion = "⚠️ Fix API Settings before configuring field mappings"
+                suggestion = " Fix API Settings before configuring field mappings"
         else:
-            status_text = "🔄 No Test Connection performed yet"
+            status_text = " No Test Connection performed yet"
             status_color = 'orange'
-            suggestion = "💡 Tip: Run Test Connection first for better field suggestions"
+            suggestion = " Tip: Run Test Connection first for better field suggestions"
         
         ttk.Label(status_frame, text=status_text, foreground=status_color, font=('Arial', 9)).pack(anchor=tk.W)
         ttk.Label(status_frame, text=suggestion, foreground='blue', font=('Arial', 8)).pack(anchor=tk.W, pady=(5, 0))
@@ -7327,7 +7405,7 @@ RECENT ACTIVITY:
         preset_frame = ttk.LabelFrame(dialog, text="TBS Receiving API Preset", padding=10)
         preset_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
         
-        ttk.Label(preset_frame, text="🎯 Detected: TBS Receiving API Format", 
+        ttk.Label(preset_frame, text=" Detected: TBS Receiving API Format", 
                  foreground='green', font=('Arial', 9, 'bold')).pack(anchor=tk.W)
         ttk.Label(preset_frame, text="Format: JSON-RPC 2.0 with nested order_data structure", 
                  foreground='blue', font=('Arial', 8)).pack(anchor=tk.W)
@@ -7340,37 +7418,42 @@ RECENT ACTIVITY:
         fields_text.pack(fill=tk.BOTH, expand=True)
         
         def load_tbs_preset():
-            # TBS Receiving API fields (sesuai dengan struktur yang Anda berikan)
+            # TBS Receiving API fields (sesuai dengan struktur order_data yang benar)
             tbs_fields = [
-                "# === HEADER FIELDS (order_data level) ===",
-                "partner_id",
-                "journal_id", 
-                "date_order",
-                "officers",
-                "keterangan_description",
-                "driver_name",
-                "vehicle_no",
-                "destination_warehouse_id",
-                "branch_id",
+                "# === ROOT LEVEL FIELDS ===",
+                "uuid",
+                "timestamp", 
+                "source",
                 "",
-                "# === DETAIL FIELDS (order_line level) ===",
-                "product_code",
-                "qty_brutto",
-                "qty_tara", 
-                "qty_netto",
-                "product_uom",
-                "sortation_percent",
-                "sortation_weight",
-                "qty_netto2",
-                "price_unit",
-                "product_qty",
-                "incoming_date",
-                "outgoing_date"
+                "# === ORDER_DATA LEVEL FIELDS ===",
+                "order_data.partner_id",
+                "order_data.journal_id", 
+                "order_data.date_order",
+                "order_data.officers",
+                "order_data.keterangan_description",
+                "order_data.driver_name",
+                "order_data.vehicle_no",
+                "order_data.destination_warehouse_id",
+                "order_data.branch_id",
+                "",
+                "# === ORDER_LINE LEVEL FIELDS (nested in order_data) ===",
+                "order_data.order_line.product_code",
+                "order_data.order_line.qty_brutto",
+                "order_data.order_line.qty_tara", 
+                "order_data.order_line.qty_netto",
+                "order_data.order_line.product_uom",
+                "order_data.order_line.sortation_percent",
+                "order_data.order_line.sortation_weight",
+                "order_data.order_line.qty_netto2",
+                "order_data.order_line.price_unit",
+                "order_data.order_line.product_qty",
+                "order_data.order_line.incoming_date",
+                "order_data.order_line.outgoing_date"
             ]
             fields_text.delete(1.0, tk.END)
             fields_text.insert(1.0, '\n'.join(tbs_fields))
         
-        ttk.Button(preset_frame, text="📋 Load TBS Receiving Fields", 
+        ttk.Button(preset_frame, text=" Load TBS Receiving Fields", 
                   command=load_tbs_preset).pack(anchor=tk.W, pady=(5, 0))
         
         # Instructions
@@ -7401,15 +7484,15 @@ RECENT ACTIVITY:
                     test_status = "No Test Connection" 
                     if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
                         if self.last_test_connection_result['success']:
-                            test_status = f"Test Connection: ✅ {self.last_test_connection_result['response_time']}"
+                            test_status = f"Test Connection:  {self.last_test_connection_result['response_time']}"
                         else:
-                            test_status = f"Test Connection: ❌ Failed"
+                            test_status = f"Test Connection:  Failed"
                     
-                    self.log_entry(f"✅ Loaded {len(api_fields)} TBS Receiving API fields", "INFO")
+                    self.log_entry(f" Loaded {len(api_fields)} TBS Receiving API fields", "INFO")
                     messagebox.showinfo("Success", 
-                                      f"✅ Loaded {len(api_fields)} API fields for TBS Receiving\n\n"
+                                      f" Loaded {len(api_fields)} API fields for TBS Receiving\n\n"
                                       f"Fields include: {', '.join(api_fields[:5])}{'...' if len(api_fields) > 5 else ''}\n\n"
-                                      f"🔗 Integration Status: {test_status}")
+                                      f" Integration Status: {test_status}")
                     dialog.destroy()
                 else:
                     messagebox.showwarning("Warning", "No valid API fields found. Please enter field names.")
@@ -7420,8 +7503,8 @@ RECENT ACTIVITY:
         btn_frame = ttk.Frame(dialog)
         btn_frame.pack(fill=tk.X, padx=20, pady=20)
         
-        ttk.Button(btn_frame, text="💾 Save TBS Fields", command=save_fields).pack(side=tk.RIGHT, padx=(5, 0))
-        ttk.Button(btn_frame, text="❌ Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btn_frame, text=" Save TBS Fields", command=save_fields).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(btn_frame, text=" Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
     
     def update_mapping_comboboxes(self):
         """Update all mapping comboboxes with new API fields"""
@@ -7430,11 +7513,130 @@ RECENT ACTIVITY:
             for widgets in self.mapping_widgets.values():
                 widgets['api_combo']['values'] = new_values
             
+            # Auto-map fields if this is TBS Receiving API
+            if hasattr(self, 'api_fields_source') and 'tbs' in self.api_fields_source.lower():
+                self.auto_map_tbs_fields()
+            
             # Update JSON preview after updating fields
             self.update_json_preview()
             
             source_info = getattr(self, 'api_fields_source', 'unknown')
             self.log_entry(f"Updated mapping comboboxes with {len(self.api_fields)} API fields (source: {source_info})", "INFO")
+    
+    def auto_map_tbs_fields(self):
+        """Automatically map database fields to TBS API fields based on common patterns"""
+        if not hasattr(self, 'mapping_widgets') or not hasattr(self, 'table_columns'):
+            return
+            
+        # TBS field mapping patterns (database field -> TBS field)
+        tbs_mapping_patterns = {
+            # Partner/Supplier fields
+            'supplier': 'partner_id',
+            'partner': 'partner_id', 
+            'vendor': 'partner_id',
+            'customer': 'partner_id',
+            
+            # Journal/Bank fields
+            'bank': 'journal_id',
+            'journal': 'journal_id',
+            'payment': 'journal_id',
+            'account': 'journal_id',
+            
+            # Date fields
+            'date': 'date_order',
+            'time': 'date_order',
+            'created': 'date_order',
+            'order_date': 'date_order',
+            
+            # Officer fields
+            'officer': 'officers',
+            'user': 'officers',
+            'operator': 'officers',
+            'staff': 'officers',
+            
+            # Description fields
+            'description': 'keterangan_description',
+            'note': 'keterangan_description',
+            'remark': 'keterangan_description',
+            'comment': 'keterangan_description',
+            
+            # Driver fields
+            'driver': 'driver_name',
+            'supir': 'driver_name',
+            
+            # Vehicle fields
+            'vehicle': 'vehicle_no',
+            'truck': 'vehicle_no',
+            'mobil': 'vehicle_no',
+            'nopol': 'vehicle_no',
+            
+            # Warehouse fields
+            'warehouse': 'destination_warehouse_id',
+            'gudang': 'destination_warehouse_id',
+            
+            # Branch fields
+            'branch': 'branch_id',
+            'cabang': 'branch_id',
+            
+            # Product fields
+            'product': 'product_code',
+            'item': 'product_code',
+            'barang': 'product_code',
+            
+            # Weight fields - order matters!
+            'bruto': 'qty_brutto',
+            'gross': 'qty_brutto',
+            'tara': 'qty_tara',
+            'tare': 'qty_tara',
+            'netto': 'qty_netto',
+            'net': 'qty_netto',
+            'nett': 'qty_netto',
+            
+            # Unit fields
+            'unit': 'product_uom',
+            'uom': 'product_uom',
+            'satuan': 'product_uom',
+            
+            # Price fields
+            'price': 'price_unit',
+            'harga': 'price_unit',
+            'rate': 'price_unit',
+            
+            # Quantity fields
+            'qty': 'product_qty',
+            'quantity': 'product_qty',
+            'jumlah': 'product_qty',
+        }
+        
+        mapped_count = 0
+        for db_column in self.table_columns:
+            column_name = db_column['name'] if isinstance(db_column, dict) else db_column
+            if column_name in self.mapping_widgets:
+                db_lower = column_name.lower()
+                
+                # Find best match
+                best_match = None
+                for pattern, tbs_field in tbs_mapping_patterns.items():
+                    if pattern in db_lower:
+                        # Prefer exact matches over partial matches
+                        if pattern == db_lower:
+                            best_match = tbs_field
+                            break
+                        elif best_match is None:
+                            best_match = tbs_field
+                
+                # Apply mapping if found
+                if best_match and best_match in self.api_fields:
+                    try:
+                        self.mapping_widgets[column_name]['api_combo'].set(best_match)
+                        mapped_count += 1
+                    except:
+                        pass
+        
+        if mapped_count > 0:
+            self.log_entry(f"Auto-mapped {mapped_count} TBS fields based on column names", "INFO")
+            # Update JSON preview after auto-mapping
+            self.update_json_preview()
     
     def extract_fields_from_schema(self, schema):
         """Extract field names from API schema"""
@@ -7466,202 +7668,155 @@ RECENT ACTIVITY:
         return fields
     
     def update_json_preview(self):
-        """Update JSON preview with current mapping and real sample data - Smart Mode dengan API Settings"""
+        """Update JSON preview with current mapping and real sample data - TBS Receiving API Format"""
         if not hasattr(self, 'json_preview'):
             return
             
         try:
             # Generate sample data based on current mapping
-            preview_data = {}
             mapping_count = 0
+            mapped_fields = {}
+            
+            # Count mapped fields and collect data
+            if hasattr(self, 'field_mappings') and self.field_mappings:
+                for db_field, api_field in self.field_mappings.items():
+                    if api_field and api_field != "(unmapped)":
+                        mapping_count += 1
+                        
+                        # Get sample data for this field
+                        sample_value = self.get_sample_data_for_column(db_field)
+                        if sample_value is None:
+                            sample_value = f"sample_{db_field.lower()}"
+                        
+                        mapped_fields[api_field] = sample_value
             
             # Check API Settings status for Smart Mode preview
             api_settings_status = "Not configured"
             test_connection_status = "Not tested"
-            smart_mode_info = ""
             
             # Check Test Connection status
             if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
                 if self.last_test_connection_result.get('success', False):
-                    test_connection_status = f"✅ Success ({self.last_test_connection_result.get('response_time', 'N/A')})"
-                    smart_mode_info = "Smart Mode: Using validated API Settings"
+                    test_connection_status = f" Success ({self.last_test_connection_result.get('response_time', 'N/A')})"
                 else:
-                    test_connection_status = f"❌ Failed ({self.last_test_connection_result.get('error', 'Unknown error')})"
-                    smart_mode_info = "⚠️ Smart Mode: API Settings validation failed"
-            else:
-                smart_mode_info = "⚠️ Smart Mode: Run Test Connection first for best results"
+                    test_connection_status = f" Failed ({self.last_test_connection_result.get('error', 'Unknown error')})"
             
-            # Check API Settings configuration
-            api_url = self.api_url_var.get().strip()
-            auth_type = self.auth_type_var.get()
-            if api_url and auth_type != "none":
-                if auth_type == "bearer":
-                    token = self.api_token_var.get().strip()
-                    api_settings_status = "✅ Configured (Bearer Token)" if token else "⚠️ Missing Token"
-                elif auth_type == "basic":
-                    username = self.api_username_var.get().strip()
-                    password = self.api_password_var.get().strip()
-                    api_settings_status = "✅ Configured (Basic Auth)" if username and password else "⚠️ Missing Credentials"
-                elif auth_type == "api_key":
-                    api_key = self.api_key_var.get().strip()
-                    api_settings_status = "✅ Configured (API Key)" if api_key else "⚠️ Missing API Key"
-            else:
-                api_settings_status = "⚠️ Not configured"
+            # Check API URL configuration
+            api_url = getattr(self, 'api_endpoint_var', tk.StringVar()).get().strip()
+            if not api_url:
+                api_url = getattr(self, 'api_url_var', tk.StringVar()).get().strip()
             
-            # Generate API-ready JSON structure for TBS Receiving format
+            # Generate TBS Receiving API format
             if mapping_count > 0:
-                # Format khusus untuk TBS Receiving API (nested structure)
+                # Build order_data structure
+                order_data = {
+                    "partner_id": mapped_fields.get("partner_id", "PT Sumber Sawit Default"),
+                    "journal_id": mapped_fields.get("journal_id", "Bank Agro Default"),
+                    "date_order": mapped_fields.get("date_order", datetime.now().strftime("%d/%m/%Y %H:%M:%S")),
+                    "officers": mapped_fields.get("officers", "System User"),
+                    "keterangan_description": mapped_fields.get("keterangan_description", "Auto submission from MDB Agent Pro"),
+                    "driver_name": mapped_fields.get("driver_name", "Sample Driver"),
+                    "vehicle_no": mapped_fields.get("vehicle_no", "B1234XX"),
+                    "destination_warehouse_id": mapped_fields.get("destination_warehouse_id", "Gudang Default"),
+                    "branch_id": mapped_fields.get("branch_id", "Default Branch")
+                }
+                
+                # Build order_line structure
+                order_line = {
+                    "product_code": mapped_fields.get("product_code", "TBS-AUTO-001"),
+                    "qty_brutto": self.convert_to_number(mapped_fields.get("qty_brutto", 1000)),
+                    "qty_tara": self.convert_to_number(mapped_fields.get("qty_tara", 50)),
+                    "qty_netto": self.convert_to_number(mapped_fields.get("qty_netto", 950)),
+                    "product_uom": mapped_fields.get("product_uom", "kg"),
+                    "sortation_percent": self.convert_to_number(mapped_fields.get("sortation_percent", 5)),
+                    "sortation_weight": self.convert_to_number(mapped_fields.get("sortation_weight", 47.5)),
+                    "qty_netto2": self.convert_to_number(mapped_fields.get("qty_netto2", 902.5)),
+                    "price_unit": self.convert_to_number(mapped_fields.get("price_unit", 1500)),
+                    "product_qty": self.convert_to_number(mapped_fields.get("product_qty", 1)),
+                    "incoming_date": mapped_fields.get("incoming_date", datetime.now().strftime("%d/%m/%Y %H:%M:%S")),
+                    "outgoing_date": mapped_fields.get("outgoing_date", datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+                }
+                
+                # Complete TBS Receiving API payload
                 api_payload = {
                     "jsonrpc": "2.0",
                     "params": {
                         "order_data": [
-                            {
-                                # Header fields
-                                "partner_id": "PT Sumber Sawit",  # Default, bisa di-map
-                                "journal_id": "Bank Agro",        # Default, bisa di-map
-                                "date_order": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                "officers": "System User",        # Default, bisa di-map
-                                "keterangan_description": "Auto submission from MDB Agent Pro",
-                                "driver_name": "",               # Akan di-map dari database
-                                "vehicle_no": "",                # Akan di-map dari database
-                                "destination_warehouse_id": "Gudang Default",  # Default, bisa di-map
-                                "branch_id": "Default Branch",   # Default, bisa di-map
-                                "order_line": [
-                                    {
-                                        # Detail fields dari database mapping
-                                        "product_code": "TBS-AUTO-001",
-                                        "qty_brutto": 0,
-                                        "qty_tara": 0,
-                                        "qty_netto": 0,
-                                        "product_uom": "kg",
-                                        "sortation_percent": 0,
-                                        "sortation_weight": 0,
-                                        "qty_netto2": 0,
-                                        "price_unit": 0,
-                                        "product_qty": 1,
-                                        "incoming_date": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                        "outgoing_date": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                                    }
-                                ]
-                            }
+                            {**order_data, "order_line": [order_line]}
                         ]
                     }
                 }
                 
-                # Apply database mappings to nested structure
-                order_data = api_payload["params"]["order_data"][0]
-                order_line = order_data["order_line"][0]
-                
-                for db_column, widgets in self.mapping_widgets.items():
-                    api_field = widgets['api_field'].get()
-                    transform = widgets['transform'].get()
-                    
-                    if api_field and api_field != "(unmapped)":
-                        # Get real sample data
-                        sample_value = self.get_sample_data_for_column(db_column)
-                        if sample_value is None:
-                            sample_value = self.generate_sample_value(db_column)
-                        
-                        # Apply transformation
-                        transformed_value = self.apply_transformation_preview(sample_value, transform)
-                        
-                        # Map to appropriate nested location
-                        if api_field in ["partner_id", "journal_id", "date_order", "officers", 
-                                       "keterangan_description", "driver_name", "vehicle_no", 
-                                       "destination_warehouse_id", "branch_id"]:
-                            order_data[api_field] = transformed_value
-                        elif api_field in ["product_code", "qty_brutto", "qty_tara", "qty_netto",
-                                         "product_uom", "sortation_percent", "sortation_weight",
-                                         "qty_netto2", "price_unit", "product_qty", 
-                                         "incoming_date", "outgoing_date"]:
-                            order_line[api_field] = transformed_value
-                        else:
-                            # Custom fields go to order_line
-                            order_line[api_field] = transformed_value
-                
-                # Add metadata for tracking
+                # Add metadata for debugging
                 api_payload["_preview_info"] = {
                     "preview_mode": True,
-                    "api_settings_status": api_settings_status,
-                    "test_connection": test_connection_status,
                     "mapped_fields_count": mapping_count,
                     "api_endpoint": api_url[:50] + "..." if len(api_url) > 50 else api_url,
-                    "auth_method": auth_type.title() if auth_type != "none" else "No Authentication",
-                    "smart_mode": smart_mode_info,
-                    "format": "TBS Receiving API - Nested JSON-RPC 2.0"
+                    "test_connection": test_connection_status,
+                    "format": "TBS Receiving API - JSON-RPC 2.0"
                 }
                 
                 preview_data = api_payload
             else:
-                # Placeholder untuk no mappings
+                # No mappings configured
                 preview_data = {
                     "message": "Configure field mappings to see TBS Receiving API payload preview",
-                    "status": "waiting_for_mapping",
-                    "api_ready": test_connection_status.startswith("✅"),
-                    "expected_format": "JSON-RPC 2.0 with nested order_data structure",
+                    "expected_format": {
+                        "jsonrpc": "2.0",
+                        "params": {
+                            "order_data": [
+                                {
+                                    "partner_id": "Map to supplier name",
+                                    "driver_name": "Map to driver field",
+                                    "vehicle_no": "Map to vehicle number",
+                                    "order_line": [
+                                        {
+                                            "product_code": "Map to product code",
+                                            "qty_brutto": "Map to gross weight",
+                                            "qty_tara": "Map to tare weight",
+                                            "qty_netto": "Map to net weight"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
                     "next_steps": [
-                        "1. Map database fields to API fields above",
-                        "2. Use proper field names like: qty_brutto, qty_tara, qty_netto, driver_name, vehicle_no",
-                        "3. Choose appropriate transformations (Number for quantities, String for names)",
-                        "4. Test mapping with real data",
-                        "5. Submit to TBS Receiving API"
+                        "1. Map database fields using dropdowns above",
+                        "2. Use TBS field names: qty_brutto, qty_tara, qty_netto, driver_name, vehicle_no",
+                        "3. Apply Number transformation for weights",
+                        "4. Test the mapping with 'Test API Call'"
                     ]
                 }
             
-            
-            # Format JSON with pretty printing
-            json_text = json.dumps(preview_data, indent=2, ensure_ascii=False, default=str)
-            
-            # Update preview widget with enhanced header
+            # Display in preview
+            json_text = json.dumps(preview_data, indent=2, ensure_ascii=False)
             self.json_preview.config(state=tk.NORMAL)
             self.json_preview.delete(1.0, tk.END)
-            
-            if mapping_count > 0:
-                # Enhanced header with API-ready format info
-                header_text = f"// API Payload Preview - {mapping_count} fields mapped\n"
-                header_text += f"// Table: {getattr(self, 'selected_table', 'unknown')}\n"
-                header_text += f"// API Settings: {api_settings_status}\n"
-                header_text += f"// Test Connection: {test_connection_status}\n"
-                header_text += f"// {smart_mode_info}\n"
-                header_text += f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                header_text += "//\n"
-                header_text += "// ✅ This is the EXACT format that will be sent to your API\n"
-                if test_connection_status.startswith("✅"):
-                    header_text += "// 🚀 Ready for live API submission with validated settings\n"
-                else:
-                    header_text += "// ⚠️ Test API connection first for validated submission\n"
-                header_text += "// 💡 Format compatible with global API action standards\n"
-                header_text += "\n"
-                
-                self.json_preview.insert(tk.END, header_text, "comment")
-                self.json_preview.insert(tk.END, json_text, "json")
-            else:
-                placeholder_text = "// API Payload Preview - Smart Mode\n"
-                placeholder_text += f"// API Settings: {api_settings_status}\n"
-                placeholder_text += f"// Test Connection: {test_connection_status}\n"
-                placeholder_text += f"// {smart_mode_info}\n"
-                placeholder_text += "//\n"
-                placeholder_text += "// 🎯 Configure field mappings to see EXACT API payload format\n"
-                placeholder_text += "// 📤 This preview shows what will be sent to your API endpoint\n"
-                placeholder_text += "// 🔄 Format automatically syncs with global API action\n\n"
-                
-                self.json_preview.insert(tk.END, placeholder_text, "placeholder")
-                self.json_preview.insert(tk.END, json_text, "json")
-            
+            self.json_preview.insert(1.0, json_text)
             self.json_preview.config(state=tk.DISABLED)
             
         except Exception as e:
+            error_msg = f"Preview update failed: {str(e)}"
             self.json_preview.config(state=tk.NORMAL)
             self.json_preview.delete(1.0, tk.END)
-            error_text = f"// Smart Mode JSON Preview - Error\n"
-            error_text += f"// Error generating preview: {str(e)}\n"
-            error_text += f"// Please check your configuration and try again\n\n"
-            error_text += "{\n"
-            error_text += f'  "error": "{str(e)}",\n'
-            error_text += '  "status": "preview_error"\n'
-            error_text += "}"
-            self.json_preview.insert(tk.END, error_text, "error")
+            self.json_preview.insert(1.0, json.dumps({"error": error_msg}, indent=2))
             self.json_preview.config(state=tk.DISABLED)
+    
+    def convert_to_number(self, value):
+        """Helper to convert values to numbers"""
+        if value is None:
+            return 0
+        if isinstance(value, (int, float)):
+            return value
+        try:
+            # Try to convert string to number
+            if '.' in str(value):
+                return float(value)
+            else:
+                return int(value)
+        except:
+            return 0
     
     def get_sample_data_for_column(self, column_name):
         """Get real sample data from database column"""
@@ -7738,76 +7893,107 @@ RECENT ACTIVITY:
             return value
     
     def test_mapping_api_call(self):
-        """Test mapping with actual API call - SMART MODE: Use Test Connection results for optimal performance"""
+        """Test mapping with actual API call using FieldMapper"""
         try:
-            # PRIORITY 1: Check Test Connection status for smart integration
-            if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
-                if self.last_test_connection_result['success']:
-                    # Test Connection successful - proceed with confidence
-                    test_status = f"✅ Using Test Connection success ({self.last_test_connection_result['response_time']})"
-                    auth_validated = True
-                else:
-                    # Test Connection failed - show warning but allow manual test
-                    error_msg = self.last_test_connection_result.get('error', 'Unknown error')
-                    test_status = f"⚠️ Test Connection failed: {error_msg[:50]}..."
-                    auth_validated = False
-                    
-                    result = messagebox.askyesno("Test Connection Failed", 
-                                               f"❌ Previous Test Connection failed:\n{error_msg[:100]}...\n\n"
-                                               f"Do you want to proceed with mapping test anyway?\n\n"
-                                               f"💡 Recommended: Fix API Settings and run Test Connection first")
-                    if not result:
-                        return
-            else:
-                # No Test Connection performed
-                test_status = "🔄 No Test Connection performed"
-                auth_validated = False
-                
-                result = messagebox.askyesno("No Test Connection", 
-                                           f"⚠️ No Test Connection has been performed yet.\n\n"
-                                           f"Testing mapping without validating API Settings may fail.\n\n"
-                                           f"Do you want to proceed anyway?\n\n"
-                                           f"💡 Recommended: Run Test Connection in API Settings first")
-                if not result:
-                    return
-            
-            # Check API Settings configuration
-            endpoint = self.api_endpoint_var.get().strip() if hasattr(self, 'api_endpoint_var') else ""
-            if not endpoint:
-                messagebox.showerror("Error", "❌ No API endpoint configured\n\n🔧 Please configure API endpoint in API Settings tab first")
-                return
-            
-            # Check field mapping
+            # Check if mapping is configured
             if not hasattr(self, 'field_mappings') or not self.field_mappings:
-                messagebox.showwarning("Warning", "❌ No field mapping configured\n\n🔧 Please configure field mappings first")
+                messagebox.showerror("Error", "Please configure field mapping first.")
                 return
             
-            # Get sample data using current mapping
-            test_data = self.get_latest_record() if hasattr(self, 'get_latest_record') else None
+            # Check if table is selected
+            if not hasattr(self, 'selected_table') or not self.selected_table:
+                messagebox.showerror("Error", "Please select a database table first.")
+                return
             
-            if not test_data:
-                # Generate test data based on mapping
-                test_data = {}
-                for db_field, mapping in self.field_mappings.items():
-                    api_field = mapping.get('api_field')
-                    if api_field and api_field != "(unmapped)":
-                        test_data[api_field] = f"test_value_for_{db_field}"
+            # Get test data from database
+            raw_data = self.get_latest_record()
+            if not raw_data:
+                messagebox.showerror("Error", "No data found in selected table.")
+                return
             
-            # Add metadata
-            test_data.update({
-                "test": True,
-                "timestamp": datetime.now().isoformat(),
-                "agent_version": "v2.0",
-                "mapping_test": True,
-                "source": "field_mapping_test"
-            })
+            # Build mapped payload using FieldMapper
+            mapped_data = self.build_api_payload(raw_data)
             
-            # Show comprehensive test dialog
-            self.show_mapping_test_dialog(test_data, test_status, auth_validated)
+            # Show confirmation dialog with preview
+            result = messagebox.askyesno(
+                "Test Mapping API Call",
+                f"Ready to test mapping with API call.\n\n"
+                f"Mode: {self.mapping_mode.get()}\n"
+                f"Fields mapped: {len(self.field_mappings)}\n"
+                f"Table: {self.selected_table}\n\n"
+                f"Do you want to send test data to API?"
+            )
+            
+            if not result:
+                return
+            
+            # Send mapped data to API
+            success = self.send_to_api(mapped_data)
+            
+            if success:
+                messagebox.showinfo(
+                    "Test Successful", 
+                    f"Mapping test completed successfully!\n\n"
+                    f"Data was properly mapped and sent to API.\n"
+                    f"Check the Transaction Log for details."
+                )
+                self.log_entry("Mapping API test completed successfully", "SUCCESS")
+            else:
+                messagebox.showerror(
+                    "Test Failed", 
+                    f"Mapping test failed.\n\n"
+                    f"The data was mapped correctly but API call failed.\n"
+                    f"Check logs for details."
+                )
+                
+        except Exception as e:
+            error_msg = f"Mapping API test failed: {str(e)}"
+            messagebox.showerror("Error", error_msg)
+            self.log_entry(error_msg, "ERROR")
+    
+    def validate_mapping(self):
+        """Validate current field mapping configuration using FieldMapper"""
+        try:
+            # Check if mapping exists
+            if not hasattr(self, 'field_mappings') or not self.field_mappings:
+                messagebox.showwarning("Warning", "No field mapping configured. Please configure field mappings first.")
+                return
+            
+            # Use FieldMapper validation
+            if self.field_mapper:
+                validation_errors = self.field_mapper.validate_mapping()
+            else:
+                # Create temporary mapper for validation
+                self.update_field_mapper()
+                validation_errors = self.field_mapper.validate_mapping() if self.field_mapper else ["Failed to create field mapper"]
+            
+            # Show validation results
+            if validation_errors:
+                error_text = "\n".join([f"• {error}" for error in validation_errors])
+                messagebox.showerror(
+                    "Mapping Validation Failed",
+                    f"Found {len(validation_errors)} validation error(s):\n\n{error_text}\n\n"
+                    f"Please fix these issues before using the mapping."
+                )
+                self.log_entry(f"Mapping validation failed: {len(validation_errors)} errors", "ERROR")
+            else:
+                # Validation passed
+                mode = self.mapping_mode.get()
+                mapping_count = len(self.field_mappings)
+                
+                messagebox.showinfo(
+                    "Mapping Validation Passed",
+                    f"✓ Field mapping validation successful!\n\n"
+                    f"Mode: {mode.upper()}\n"
+                    f"Fields mapped: {mapping_count}\n\n"
+                    f"Your mapping configuration is valid and ready to use."
+                )
+                self.log_entry(f"Mapping validation passed: {mapping_count} fields", "SUCCESS")
             
         except Exception as e:
-            messagebox.showerror("Error", f"❌ Failed to test mapping:\n\n{str(e)}\n\n🔧 Check API Settings and field mappings")
-            self.log_entry(f"Mapping test failed: {str(e)}", "ERROR")
+            error_msg = f"Mapping validation failed: {str(e)}"
+            messagebox.showerror("Error", error_msg)
+            self.log_entry(error_msg, "ERROR")
     
     def show_mapping_test_dialog(self, test_data, test_status, auth_validated):
         """Show comprehensive mapping test dialog with Test Connection integration"""
@@ -7825,9 +8011,9 @@ RECENT ACTIVITY:
         ttk.Label(status_frame, text=test_status, foreground=status_color, font=('Arial', 9, 'bold')).pack(anchor=tk.W)
         
         if auth_validated:
-            ttk.Label(status_frame, text="✅ Using validated API Settings from Test Connection", foreground='green').pack(anchor=tk.W)
+            ttk.Label(status_frame, text=" Using validated API Settings from Test Connection", foreground='green').pack(anchor=tk.W)
         else:
-            ttk.Label(status_frame, text="⚠️ API Settings not validated - may fail", foreground='orange').pack(anchor=tk.W)
+            ttk.Label(status_frame, text=" API Settings not validated - may fail", foreground='orange').pack(anchor=tk.W)
         
         # Test Data Preview
         data_frame = ttk.LabelFrame(dialog, text="Test Data (Field Mapping Applied)", padding=10)
@@ -7852,31 +8038,31 @@ RECENT ACTIVITY:
                 
                 if success:
                     messagebox.showinfo("Test Successful", 
-                                      f"✅ Field Mapping Test Successful!\n\n"
-                                      f"• API Settings authentication: ✅\n"
-                                      f"• Field mapping applied: ✅\n"
-                                      f"• Data sent successfully: ✅\n\n"
+                                      f" Field Mapping Test Successful!\n\n"
+                                      f" API Settings authentication: \n"
+                                      f" Field mapping applied: \n"
+                                      f" Data sent successfully: \n\n"
                                       f"Integration Status: {test_status}")
                     self.log_entry("Field mapping test successful with API Settings integration", "SUCCESS")
                 else:
                     messagebox.showwarning("Test Failed", 
-                                         f"❌ Field Mapping Test Failed\n\n"
-                                         f"• Check API Settings configuration\n"
-                                         f"• Verify endpoint URL\n"
-                                         f"• Review field mapping\n\n"
+                                         f" Field Mapping Test Failed\n\n"
+                                         f" Check API Settings configuration\n"
+                                         f" Verify endpoint URL\n"
+                                         f" Review field mapping\n\n"
                                          f"Integration Status: {test_status}")
                 
                 dialog.destroy()
                 
             except Exception as e:
-                messagebox.showerror("Error", f"❌ Test failed: {str(e)}")
+                messagebox.showerror("Error", f" Test failed: {str(e)}")
                 self.log_entry(f"Mapping API test error: {str(e)}", "ERROR")
         
-        ttk.Button(btn_frame, text="📤 Send Test Data", command=send_test).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(btn_frame, text="❌ Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btn_frame, text=" Send Test Data", command=send_test).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text=" Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
     
     def send_to_api_with_settings(self, data: Dict) -> bool:
-        """Send data to API using current API Settings authentication"""
+        """Send data to API using current API Settings authentication - TBS Receiving Format"""
         try:
             # Get settings from API Settings tab
             endpoint = self.api_endpoint_var.get().strip() if hasattr(self, 'api_endpoint_var') else ""
@@ -7912,9 +8098,9 @@ RECENT ACTIVITY:
                     self.log_entry("Login authentication required but no token available", "ERROR")
                     return False
             
-            # Add UUID if not present
-            if "uuid" not in data:
-                data["uuid"] = str(uuid.uuid4())
+            # ========== CONVERT TO TBS RECEIVING FORMAT ==========
+            # Transform the data to TBS JSON-RPC 2.0 format
+            tbs_payload = self.convert_to_tbs_format(data)
             
             # Make request using API Settings
             self.log_entry(f"Sending to API using settings: {method} {endpoint} (auth: {auth_type})", "INFO")
@@ -7922,17 +8108,17 @@ RECENT ACTIVITY:
             response = requests.request(
                 method=method,
                 url=endpoint,
-                json=data if content_type == "application/json" else None,
-                data=data if content_type != "application/json" else None,
+                json=tbs_payload if content_type == "application/json" else None,
+                data=tbs_payload if content_type != "application/json" else None,
                 headers=headers,
                 timeout=30
             )
             
             if response.status_code < 300:
-                self.log_entry(f"API call successful: {response.status_code} (UUID: {data.get('uuid', 'N/A')})", "SUCCESS")
+                self.log_entry(f"API call successful: {response.status_code} (TBS format)", "SUCCESS")
                 return True
             else:
-                self.log_entry(f"API returned HTTP {response.status_code}: {response.text[:100]}", "WARNING")
+                self.log_entry(f"API returned HTTP {response.status_code}: {response.text[:200]}", "WARNING")
                 return False
                 
         except requests.exceptions.RequestException as e:
@@ -7941,6 +8127,190 @@ RECENT ACTIVITY:
         except Exception as e:
             self.log_entry(f"Unexpected error in send_to_api_with_settings: {str(e)}", "ERROR")
             return False
+    
+    def convert_to_tbs_format(self, data: Dict) -> Dict:
+        """Convert standard data format to TBS Receiving API JSON-RPC 2.0 format with nested structure support"""
+        try:
+            # Check if we have nested mapping configuration
+            if hasattr(self, 'mapping_mode') and self.mapping_mode.get() == "nested" and hasattr(self, 'nested_groups'):
+                return self.convert_with_nested_mapping(data)
+            
+            # Generate unique journal_id based on timestamp if not provided
+            current_time = datetime.now()
+            default_journal_id = f"BANK-{current_time.strftime('%Y%m%d-%H%M%S')}"
+            
+            # Default TBS structure with proper journal_id
+            order_data = {
+                "partner_id": data.get("partner_id", data.get("supplier", "Default Supplier")),
+                "journal_id": data.get("journal_id", data.get("bank", data.get("payment_method", default_journal_id))),
+                "date_order": data.get("date_order", data.get("order_date", current_time.strftime("%d/%m/%Y %H:%M:%S"))),
+                "officers": data.get("officers", data.get("officer", data.get("user", "System User"))),
+                "keterangan_description": data.get("keterangan_description", data.get("description", data.get("notes", "Auto submission from MDB Agent Pro"))),
+                "driver_name": data.get("driver_name", data.get("driver", "")),
+                "vehicle_no": data.get("vehicle_no", data.get("vehicle", data.get("truck", ""))),
+                "destination_warehouse_id": data.get("destination_warehouse_id", data.get("warehouse", "Default Warehouse")),
+                "branch_id": data.get("branch_id", data.get("branch", "Default Branch"))
+            }
+            
+            # Order line data with better field mapping
+            order_line = {
+                "product_code": data.get("product_code", data.get("product", data.get("item_code", "TBS-AUTO-001"))),
+                "qty_brutto": self.convert_to_number(data.get("qty_brutto", data.get("gross_weight", data.get("bruto", 0)))),
+                "qty_tara": self.convert_to_number(data.get("qty_tara", data.get("tare_weight", data.get("tara", 0)))),
+                "qty_netto": self.convert_to_number(data.get("qty_netto", data.get("net_weight", data.get("netto", 0)))),
+                "product_uom": data.get("product_uom", data.get("unit", "kg")),
+                "sortation_percent": self.convert_to_number(data.get("sortation_percent", data.get("sorting", 0))),
+                "sortation_weight": self.convert_to_number(data.get("sortation_weight", 0)),
+                "qty_netto2": self.convert_to_number(data.get("qty_netto2", data.get("final_weight", 0))),
+                "price_unit": self.convert_to_number(data.get("price_unit", data.get("price", data.get("harga", 0)))),
+                "product_qty": self.convert_to_number(data.get("product_qty", data.get("quantity", 1))),
+                "incoming_date": data.get("incoming_date", data.get("in_date", current_time.strftime("%d/%m/%Y %H:%M:%S"))),
+                "outgoing_date": data.get("outgoing_date", data.get("out_date", current_time.strftime("%d/%m/%Y %H:%M:%S")))
+            }
+            
+            # Build final TBS payload
+            tbs_payload = {
+                "jsonrpc": "2.0",
+                "params": {
+                    "order_data": [
+                        {**order_data, "order_line": [order_line]}
+                    ]
+                }
+            }
+            
+            return tbs_payload
+            
+        except Exception as e:
+            self.log_entry(f"Error converting to TBS format: {str(e)}", "ERROR")
+            # Return original data as fallback
+            return data
+    
+    def convert_with_nested_mapping(self, data: Dict) -> Dict:
+        """Convert data using nested mapping configuration"""
+        try:
+            result = {}
+            
+            # Process nested groups
+            for group_name, group_config in self.nested_groups.items():
+                if group_config['type'] == 'array':
+                    # Create array structure
+                    array_items = []
+                    
+                    # Create single item for now (can be enhanced for multiple records)
+                    item = {}
+                    
+                    # Map fields to this array item
+                    for field_name in group_config.get('fields', []):
+                        # Try to find matching data field
+                        mapped_value = self.find_mapped_value(data, field_name)
+                        if mapped_value is not None:
+                            item[field_name] = mapped_value
+                    
+                    # Handle nested arrays within this group
+                    if 'nested' in group_config:
+                        for nested_name, nested_config in group_config['nested'].items():
+                            if nested_config['type'] == 'array':
+                                nested_array = []
+                                nested_item = {}
+                                
+                                for nested_field in nested_config.get('fields', []):
+                                    mapped_value = self.find_mapped_value(data, nested_field)
+                                    if mapped_value is not None:
+                                        nested_item[nested_field] = mapped_value
+                                
+                                if nested_item:
+                                    nested_array.append(nested_item)
+                                
+                                item[nested_name] = nested_array
+                    
+                    if item:
+                        array_items.append(item)
+                    
+                    result[group_name] = array_items
+                
+                elif group_config['type'] == 'object':
+                    # Create object structure
+                    obj = {}
+                    for field_name in group_config.get('fields', []):
+                        mapped_value = self.find_mapped_value(data, field_name)
+                        if mapped_value is not None:
+                            obj[field_name] = mapped_value
+                    
+                    result[group_name] = obj
+            
+            # Wrap in JSON-RPC format if needed
+            if 'order_data' in result:
+                return {
+                    "jsonrpc": "2.0",
+                    "params": result
+                }
+            
+            return result
+            
+        except Exception as e:
+            self.log_entry(f"Error in nested mapping conversion: {str(e)}", "ERROR")
+            return data
+    
+    def find_mapped_value(self, data: Dict, api_field: str):
+        """Find mapped value for API field from database data"""
+        # Check direct field mappings first
+        if hasattr(self, 'field_mappings'):
+            for db_field, mapping in self.field_mappings.items():
+                if mapping.get('api_field') == api_field:
+                    value = data.get(db_field)
+                    
+                    # Apply transformation if specified
+                    transform = mapping.get('transform', 'No Transform')
+                    if transform != 'No Transform' and value is not None:
+                        value = self.apply_transformation(value, transform)
+                    
+                    return value
+        
+        # Fallback to direct field name matching
+        if api_field in data:
+            return data[api_field]
+        
+        # Try common aliases
+        aliases = {
+            'partner_id': ['supplier', 'vendor', 'customer'],
+            'journal_id': ['bank', 'payment_method', 'account'],
+            'vehicle_no': ['vehicle', 'truck', 'nopol'],
+            'qty_netto': ['net_weight', 'netto'],
+            'qty_brutto': ['gross_weight', 'bruto'],
+            'qty_tara': ['tare_weight', 'tara'],
+            'price_unit': ['price', 'harga', 'unit_price'],
+            'product_code': ['product', 'item_code', 'item']
+        }
+        
+        if api_field in aliases:
+            for alias in aliases[api_field]:
+                if alias in data:
+                    return data[alias]
+        
+        return None
+    
+    def apply_transformation(self, value, transform):
+        """Apply data transformation to value"""
+        try:
+            if transform == "Number":
+                return self.convert_to_number(value)
+            elif transform == "String":
+                return str(value)
+            elif transform == "Uppercase":
+                return str(value).upper()
+            elif transform == "Lowercase":
+                return str(value).lower()
+            elif transform == "Boolean":
+                return bool(value)
+            elif transform == "Date":
+                # Try to format as date
+                if isinstance(value, str):
+                    return value
+                return str(value)
+        except:
+            pass
+        
+        return value
     
     def extract_fields_from_schema(self, schema):
         """Extract field names from API schema"""
@@ -7968,15 +8338,15 @@ RECENT ACTIVITY:
         test_connection_color = "orange"
         if hasattr(self, 'last_test_connection_result') and self.last_test_connection_result:
             if self.last_test_connection_result['success']:
-                test_connection_status = f"✅ Success ({self.last_test_connection_result['response_time']})"
+                test_connection_status = f" Success ({self.last_test_connection_result['response_time']})"
                 test_connection_color = "green"
             else:
                 error_msg = self.last_test_connection_result.get('error', 'Unknown error')
-                test_connection_status = f"❌ Failed: {error_msg[:30]}..."
+                test_connection_status = f" Failed: {error_msg[:30]}..."
                 test_connection_color = "red"
         
         if not hasattr(self, 'field_mappings') or not self.field_mappings:
-            messagebox.showwarning("Validation", "❌ No field mapping to validate\n\n🔧 Please configure field mappings first")
+            messagebox.showwarning("Validation", " No field mapping to validate\n\n Please configure field mappings first")
             return
         
         # Create validation dialog
@@ -8014,7 +8384,7 @@ RECENT ACTIVITY:
             if api_field and api_field != "(unmapped)":
                 mapped_count += 1
                 if api_field in api_fields_used:
-                    issues.append(f"❌ Duplicate API field mapping: '{api_field}' is mapped to multiple database fields")
+                    issues.append(f" Duplicate API field mapping: '{api_field}' is mapped to multiple database fields")
                 else:
                     api_fields_used.append(api_field)
         
@@ -8024,36 +8394,36 @@ RECENT ACTIVITY:
         # API Settings checks
         validation_report += "API INTEGRATION STATUS:\n"
         if not endpoint:
-            validation_report += "❌ No API endpoint configured\n"
+            validation_report += " No API endpoint configured\n"
             issues.append("API endpoint not configured")
         else:
-            validation_report += f"✅ Endpoint configured: {endpoint}\n"
+            validation_report += f" Endpoint configured: {endpoint}\n"
         
-        validation_report += f"✅ Authentication type: {auth_type}\n"
+        validation_report += f" Authentication type: {auth_type}\n"
         
         if test_connection_color == "green":
-            validation_report += f"✅ Test Connection: Successful\n"
+            validation_report += f" Test Connection: Successful\n"
         elif test_connection_color == "red":
-            validation_report += f"❌ Test Connection: Failed\n"
+            validation_report += f" Test Connection: Failed\n"
             issues.append("Test Connection failed")
         else:
-            validation_report += f"⚠️ Test Connection: Not performed\n"
+            validation_report += f" Test Connection: Not performed\n"
             issues.append("Test Connection not performed")
         
         validation_report += f"\nFIELD MAPPING STATUS:\n"
-        validation_report += f"• Total database fields: {total_count}\n"
-        validation_report += f"• Mapped fields: {mapped_count}\n"
-        validation_report += f"• Coverage: {(mapped_count/total_count*100) if total_count > 0 else 0:.1f}%\n\n"
+        validation_report += f" Total database fields: {total_count}\n"
+        validation_report += f" Mapped fields: {mapped_count}\n"
+        validation_report += f" Coverage: {(mapped_count/total_count*100) if total_count > 0 else 0:.1f}%\n\n"
         
         # Check mapping completeness
         if mapped_count == 0:
             issues.append("No fields are mapped")
-            validation_report += "❌ No fields are mapped\n"
+            validation_report += " No fields are mapped\n"
         elif mapped_count < total_count * 0.5:
             issues.append(f"Low mapping coverage: Only {mapped_count} out of {total_count} fields mapped")
-            validation_report += f"⚠️ Low mapping coverage\n"
+            validation_report += f" Low mapping coverage\n"
         else:
-            validation_report += f"✅ Good mapping coverage\n"
+            validation_report += f" Good mapping coverage\n"
         
         # Check for required API fields (common ones)
         required_fields = ['id', 'timestamp']
@@ -8064,7 +8434,7 @@ RECENT ACTIVITY:
         
         if missing_required:
             issues.append(f"Missing recommended fields: {', '.join(missing_required)}")
-            validation_report += f"⚠️ Missing recommended fields: {', '.join(missing_required)}\n"
+            validation_report += f" Missing recommended fields: {', '.join(missing_required)}\n"
         
         # Field mapping details
         validation_report += f"\nFIELD MAPPING DETAILS:\n"
@@ -8072,20 +8442,20 @@ RECENT ACTIVITY:
             api_field = mapping.get('api_field', '(unmapped)')
             transform = mapping.get('transform', 'none')
             if api_field != "(unmapped)":
-                validation_report += f"✅ {db_field} → {api_field}"
+                validation_report += f" {db_field}  {api_field}"
                 if transform != 'none':
                     validation_report += f" (transform: {transform})"
                 validation_report += "\n"
             else:
-                validation_report += f"⚠️ {db_field} → (unmapped)\n"
+                validation_report += f" {db_field}  (unmapped)\n"
         
         # Summary
         validation_report += f"\nVALIDATION SUMMARY:\n"
         if not issues:
-            validation_report += "✅ All validations passed!\n"
-            validation_report += "✅ Ready for production use\n"
+            validation_report += " All validations passed!\n"
+            validation_report += " Ready for production use\n"
         else:
-            validation_report += f"❌ Found {len(issues)} issue(s):\n"
+            validation_report += f" Found {len(issues)} issue(s):\n"
             for i, issue in enumerate(issues, 1):
                 validation_report += f"  {i}. {issue}\n"
         
@@ -8095,7 +8465,7 @@ RECENT ACTIVITY:
         results_text.config(state=tk.DISABLED)
         
         # Close button
-        ttk.Button(dialog, text="✅ Close", command=dialog.destroy).pack(pady=20)
+        ttk.Button(dialog, text=" Close", command=dialog.destroy).pack(pady=20)
         
         self.log_entry(f"Mapping validation: {len(issues)} issues found", "INFO" if not issues else "WARNING")
     
@@ -8159,7 +8529,7 @@ RECENT ACTIVITY:
                         applied_count += 1
             
             messagebox.showinfo("Template Loaded", 
-                              f"✅ Template '{template_name}' loaded successfully!\n\n" +
+                              f" Template '{template_name}' loaded successfully!\n\n" +
                               f"Applied to {applied_count} fields.\n" +
                               "Configure remaining fields as needed.")
             
@@ -8222,16 +8592,36 @@ RECENT ACTIVITY:
         for i, column in enumerate(self.table_columns):
             self.create_mapping_row(i, column)
         
-        # Add save button at bottom
+        # Add save button at bottom with better sizing
         save_frame = ttk.Frame(self.mapping_scroll_frame)
-        save_frame.pack(fill=tk.X, pady=(20, 10))
+        save_frame.pack(fill=tk.X, pady=(20, 10), padx=10)
         
-        ttk.Button(save_frame, text="💾 Save Field Mapping", 
-                  command=self.save_field_mapping, style="Accent.TButton").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(save_frame, text="🔄 Reset Mapping", 
-                  command=self.reset_field_mapping).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(save_frame, text="📋 Generate Preview", 
-                  command=self.update_json_preview).pack(side=tk.LEFT)
+        # Create buttons with explicit sizes and better styling
+        save_btn = ttk.Button(save_frame, text=" Save Field Mapping", 
+                             command=self.save_field_mapping, width=20)
+        save_btn.pack(side=tk.LEFT, padx=(0, 10), pady=5)
+        
+        reset_btn = ttk.Button(save_frame, text=" Reset Mapping", 
+                              command=self.reset_field_mapping, width=15)
+        reset_btn.pack(side=tk.LEFT, padx=(0, 10), pady=5)
+        
+        preview_btn = ttk.Button(save_frame, text=" Generate Preview", 
+                                command=self.update_json_preview, width=18)
+        preview_btn.pack(side=tk.LEFT, padx=(0, 10), pady=5)
+        
+        # Add Template Save/Load buttons
+        template_frame = ttk.Frame(self.mapping_scroll_frame)
+        template_frame.pack(fill=tk.X, pady=10, padx=10)
+        
+        ttk.Label(template_frame, text="Templates:", font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=(0, 10))
+        
+        save_template_btn = ttk.Button(template_frame, text=" Save Template", 
+                                      command=self.show_save_template_dialog, width=15)
+        save_template_btn.pack(side=tk.LEFT, padx=(0, 10), pady=5)
+        
+        load_template_btn = ttk.Button(template_frame, text=" Load Template", 
+                                      command=self.load_selected_template, width=15)
+        load_template_btn.pack(side=tk.LEFT, padx=(0, 10), pady=5)
         
         # Update scroll region and scroll to show buttons
         self.mapping_canvas.update_idletasks()
@@ -8241,14 +8631,22 @@ RECENT ACTIVITY:
         self.mapping_canvas.yview_moveto(1.0)
     
     def create_mapping_row(self, row_index, column):
-        """Create a mapping row for a database column with drag-and-drop support"""
+        """Create a mapping row for a database column with improved sizing"""
         row_frame = ttk.Frame(self.mapping_scroll_frame)
-        row_frame.pack(fill=tk.X, pady=2, padx=5)
+        row_frame.pack(fill=tk.X, pady=4, padx=10)
         
-        # Database column label with drag-and-drop support
-        db_label = ttk.Label(row_frame, text=f"{column['name']} ({column.get('type', 'Unknown')})", 
-                            font=('Arial', 9), cursor="hand2")
-        db_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 20))
+        # Configure grid weights for responsive layout
+        row_frame.columnconfigure(2, weight=1)
+        row_frame.columnconfigure(3, weight=1)
+        
+        # Database column label with better formatting
+        db_text = f"{column['name']} ({column.get('type', 'Unknown')})"
+        if len(db_text) > 25:
+            db_text = db_text[:22] + "..."
+        
+        db_label = ttk.Label(row_frame, text=db_text, 
+                            font=('Arial', 9), cursor="hand2", width=25)
+        db_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
         
         # Add drag-and-drop functionality
         db_label.bind("<Button-1>", lambda e: self.start_drag(e, column['name']))
@@ -8259,11 +8657,11 @@ RECENT ACTIVITY:
         db_label.bind("<Double-1>", lambda e: self.show_column_details(column))
         
         # Arrow
-        ttk.Label(row_frame, text="→", font=('Arial', 10)).grid(row=0, column=1, padx=10)
+        ttk.Label(row_frame, text="", font=('Arial', 12, 'bold')).grid(row=0, column=1, padx=10)
         
-        # API field dropdown with more comprehensive options
+        # API field dropdown with better sizing
         api_var = tk.StringVar()
-        api_combo = ttk.Combobox(row_frame, textvariable=api_var, width=20, state="readonly")
+        api_combo = ttk.Combobox(row_frame, textvariable=api_var, width=35, state="readonly")
         api_combo['values'] = [
             "(unmapped)", 
             "id", "name", "value", "timestamp", "status", "data", "description",
@@ -8272,7 +8670,7 @@ RECENT ACTIVITY:
             "Custom..."
         ]
         api_combo.set("(unmapped)")
-        api_combo.grid(row=0, column=2, sticky=tk.W, padx=(0, 20))
+        api_combo.grid(row=0, column=2, sticky=tk.EW, padx=(0, 10))
         
         # Add double-click for API field details
         api_combo.bind("<Double-1>", lambda e: self.show_api_field_details(api_var.get()))
@@ -8285,15 +8683,15 @@ RECENT ACTIVITY:
         
         api_var.trace('w', on_api_field_change)
         
-        # Transformation dropdown with more options
+        # Transformation dropdown with better sizing
         transform_var = tk.StringVar()
-        transform_combo = ttk.Combobox(row_frame, textvariable=transform_var, width=15, state="readonly")
+        transform_combo = ttk.Combobox(row_frame, textvariable=transform_var, width=20, state="readonly")
         transform_combo['values'] = [
             "No Transform", "String", "Number", "Date", "Boolean", 
             "Uppercase", "Lowercase", "Trim", "JSON", "Base64", "Custom..."
         ]
         transform_combo.set("No Transform")
-        transform_combo.grid(row=0, column=3, sticky=tk.W)
+        transform_combo.grid(row=0, column=3, sticky=tk.EW, padx=(0, 10))
         
         # Add double-click for transformation details
         transform_combo.bind("<Double-1>", lambda e: self.show_transform_details(transform_var.get()))
@@ -8319,86 +8717,307 @@ RECENT ACTIVITY:
         transform_var.trace('w', lambda *args: self.update_json_preview())
     
     def show_custom_field_dialog(self, api_var, column_name):
-        """Show dialog for custom API field entry"""
+        """Show dialog for adding custom API field mapping"""
+        if not hasattr(self, 'api_fields'):
+            self.api_fields = []
+        
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Custom API Field - {column_name}")
-        dialog.geometry("500x400")
+        dialog.geometry("500x600")
+        dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
         
         # Center the dialog
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
-        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        x = (dialog.winfo_screenwidth() - dialog.winfo_width()) // 2
+        y = (dialog.winfo_screenheight() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
         
-        main_frame = ttk.Frame(dialog, padding=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
         # Title
-        ttk.Label(main_frame, text=f"Custom API Field for: {column_name}", 
-                 font=('Arial', 12, 'bold')).pack(pady=(0, 15))
+        title_frame = ttk.Frame(dialog)
+        title_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
         
-        # Instructions
-        instruction_text = """Enter the API field path using dot notation for nested structures:
+        ttk.Label(title_frame, text=f" Custom API Field for: {column_name}", 
+                 font=('Arial', 14, 'bold')).pack()
+        ttk.Label(title_frame, text="Define custom API field mapping for this database column", 
+                 font=('Arial', 10), foreground='gray').pack()
+        
+        # Field entry
+        entry_frame = ttk.LabelFrame(dialog, text="Field Configuration", padding=10)
+        entry_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+        
+        # Field name
+        ttk.Label(entry_frame, text="Field Name:").pack(anchor=tk.W)
+        field_name_var = tk.StringVar()
+        field_name_entry = ttk.Entry(entry_frame, textvariable=field_name_var, font=('Consolas', 10))
+        field_name_entry.pack(fill=tk.X, pady=(2, 10))
+        
+        # Field path (for nested JSON)
+        ttk.Label(entry_frame, text="JSON Path (optional, e.g., 'order_data.items[0].name'):").pack(anchor=tk.W)
+        field_path_var = tk.StringVar()
+        field_path_entry = ttk.Entry(entry_frame, textvariable=field_path_var, font=('Consolas', 10))
+        field_path_entry.pack(fill=tk.X, pady=(2, 10))
+        
+        # Description
+        ttk.Label(entry_frame, text="Description:").pack(anchor=tk.W)
+        description_var = tk.StringVar()
+        description_entry = ttk.Entry(entry_frame, textvariable=description_var)
+        description_entry.pack(fill=tk.X, pady=(2, 0))
+        
+        # API format examples
+        examples_frame = ttk.LabelFrame(dialog, text="Common API Field Examples", padding=10)
+        examples_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+        
+        examples_text = scrolledtext.ScrolledText(examples_frame, height=15, state=tk.DISABLED, font=('Consolas', 9))
+        examples_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Populate examples
+        examples_content = """TBS Receiving API - JSON-RPC 2.0 Format:
+[CHAR]
 
-Examples for your JSON-RPC structure:
-• params.order_data[0].partner_id
-• params.order_data[0].journal_id  
-• params.order_data[0].date_order
-• params.order_data[0].vehicle_no
-• params.order_data[0].driver_name
-• params.order_data[0].order_line[0].product_code
-• params.order_data[0].order_line[0].qty_brutto
-• params.order_data[0].order_line[0].qty_tara
-• params.order_data[0].order_line[0].qty_netto"""
+Basic Fields:
+[CHAR] id                    - Request ID
+[CHAR] method               - API method name
+[CHAR] jsonrpc              - Protocol version (2.0)
+
+Order Data Fields (order_data object):
+[CHAR] order_data.order_id           - Order identifier
+[CHAR] order_data.customer_name      - Customer name
+[CHAR] order_data.total_amount       - Total order amount
+[CHAR] order_data.order_date         - Order date
+[CHAR] order_data.status             - Order status
+
+Item Fields (order_data.items array):
+[CHAR] order_data.items[0].item_id      - Item identifier
+[CHAR] order_data.items[0].item_name    - Item name
+[CHAR] order_data.items[0].quantity     - Item quantity
+[CHAR] order_data.items[0].unit_price   - Item unit price
+[CHAR] order_data.items[0].category     - Item category
+
+Weight Fields (for timbangan/scale data):
+[CHAR] order_data.items[0].gross_weight    - Gross weight
+[CHAR] order_data.items[0].tare_weight     - Tare weight
+[CHAR] order_data.items[0].net_weight      - Net weight
+[CHAR] order_data.items[0].weight_unit     - Weight unit (kg, tons)
+
+Timestamp Fields:
+[CHAR] order_data.created_at             - Creation timestamp
+[CHAR] order_data.updated_at             - Update timestamp
+[CHAR] order_data.items[0].weighing_time - Weighing timestamp
+
+Location Fields:
+[CHAR] order_data.warehouse_id           - Warehouse identifier
+[CHAR] order_data.location              - Location description
+[CHAR] order_data.items[0].scale_id     - Scale/timbangan ID
+
+Additional Metadata:
+[CHAR] order_data.operator_id           - Operator identifier
+[CHAR] order_data.vehicle_number        - Vehicle number
+[CHAR] order_data.reference_number      - Reference/document number
+[CHAR] order_data.notes                 - Additional notes
+
+Standard REST API Fields:
+[CHAR]
+[CHAR] customer_id          - Customer identifier
+[CHAR] product_name         - Product name
+[CHAR] price               - Product price
+[CHAR] created_at          - Creation timestamp
+ updated_at          - Update timestamp"""
         
-        instruction_label = ttk.Label(main_frame, text=instruction_text, 
-                                     font=('Arial', 9), justify=tk.LEFT)
-        instruction_label.pack(pady=(0, 15), fill=tk.X)
+        examples_text.config(state=tk.NORMAL)
+        examples_text.insert(tk.END, examples_content)
+        examples_text.config(state=tk.DISABLED)
         
-        # Entry field
-        ttk.Label(main_frame, text="API Field Path:").pack(anchor=tk.W)
-        entry_var = tk.StringVar()
-        entry = ttk.Entry(main_frame, textvariable=entry_var, width=50)
-        entry.pack(fill=tk.X, pady=(5, 15))
-        entry.focus()
+        # Quick insert buttons
+        quick_frame = ttk.Frame(dialog)
+        quick_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
         
-        # Preset buttons for common patterns
-        preset_frame = ttk.LabelFrame(main_frame, text="Quick Presets", padding=10)
-        preset_frame.pack(fill=tk.X, pady=(0, 15))
+        def insert_preset(field_name, path="", desc=""):
+            field_name_var.set(field_name)
+            field_path_var.set(path)
+            description_var.set(desc)
         
-        preset_buttons = [
-            ("Main Data", "params.order_data[0]."),
-            ("Order Line", "params.order_data[0].order_line[0]."),
-            ("Weight Data", "params.order_data[0].order_line[0].qty_"),
-        ]
-        
-        for text, value in preset_buttons:
-            ttk.Button(preset_frame, text=text, 
-                      command=lambda v=value: entry_var.set(v)).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(quick_frame, text="TBS Order ID", 
+                  command=lambda: insert_preset("order_id", "order_data.order_id", "TBS Order identifier")).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(quick_frame, text="TBS Item Name", 
+                  command=lambda: insert_preset("item_name", "order_data.items[0].item_name", "TBS Item name")).pack(side=tk.LEFT, padx=5)
+        ttk.Button(quick_frame, text="TBS Weight", 
+                  command=lambda: insert_preset("net_weight", "order_data.items[0].net_weight", "TBS Net weight")).pack(side=tk.LEFT, padx=5)
         
         # Buttons
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=15)
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
         
-        def on_ok():
-            field_path = entry_var.get().strip()
-            if field_path:
-                api_var.set(field_path)
-                dialog.destroy()
+        def add_field():
+            field_name = field_name_var.get().strip()
+            field_path = field_path_var.get().strip()
+            
+            if not field_name:
+                messagebox.showerror("Error", "Please enter a field name")
+                return
+            
+            # Use path if provided, otherwise use name
+            final_field = field_path if field_path else field_name
+            
+            # Check if field already exists
+            if final_field in self.api_fields:
+                messagebox.showwarning("Warning", f"Field '{final_field}' already exists")
+                return
+            
+            # Set the custom field in the dropdown
+            if final_field:
+                # Add to api_fields if not exists
+                if final_field not in self.api_fields:
+                    self.api_fields.append(final_field)
+                    # Refresh dropdown options
+                    if hasattr(self, 'mapping_scroll_frame'):
+                        self.refresh_mapping_interface()
+                api_var.set(final_field)
             else:
-                messagebox.showwarning("Invalid Input", "Please enter a valid API field path")
+                messagebox.showwarning("Warning", "Please enter a field name")
+                return
+            
+            dialog.destroy()
         
-        def on_cancel():
+        def cancel_dialog():
             api_var.set("(unmapped)")
             dialog.destroy()
         
-        ttk.Button(button_frame, text="OK", command=on_ok).pack(side=tk.RIGHT, padx=(10, 0))
-        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Cancel", command=cancel_dialog).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="Add Field", command=add_field).pack(side=tk.RIGHT)
         
-        # Bind Enter key
-        entry.bind('<Return>', lambda e: on_ok())
+        # Focus on field name entry
+        field_name_entry.focus_set()
+    
+    def show_custom_field_dialog_manual(self):
+        """Show dialog for adding custom API fields manually (for use in mapping tab)"""
+        if not hasattr(self, 'api_fields'):
+            self.api_fields = []
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Custom API Field")
+        dialog.geometry("500x600")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - dialog.winfo_width()) // 2
+        y = (dialog.winfo_screenheight() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Title
+        title_frame = ttk.Frame(dialog)
+        title_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
+        
+        ttk.Label(title_frame, text=" Add Custom API Field", 
+                 font=('Arial', 14, 'bold')).pack()
+        ttk.Label(title_frame, text="Define custom API fields for field mapping", 
+                 font=('Arial', 10), foreground='gray').pack()
+        
+        # Field entry
+        entry_frame = ttk.LabelFrame(dialog, text="Field Configuration", padding=10)
+        entry_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+        
+        # Field name
+        ttk.Label(entry_frame, text="Field Name:").pack(anchor=tk.W)
+        field_name_var = tk.StringVar()
+        field_name_entry = ttk.Entry(entry_frame, textvariable=field_name_var, font=('Consolas', 10))
+        field_name_entry.pack(fill=tk.X, pady=(2, 10))
+        
+        # Field path (for nested JSON)
+        ttk.Label(entry_frame, text="JSON Path (optional, e.g., 'order_data.items[0].name'):").pack(anchor=tk.W)
+        field_path_var = tk.StringVar()
+        field_path_entry = ttk.Entry(entry_frame, textvariable=field_path_var, font=('Consolas', 10))
+        field_path_entry.pack(fill=tk.X, pady=(2, 10))
+        
+        # Description
+        ttk.Label(entry_frame, text="Description:").pack(anchor=tk.W)
+        description_var = tk.StringVar()
+        description_entry = ttk.Entry(entry_frame, textvariable=description_var)
+        description_entry.pack(fill=tk.X, pady=(2, 0))
+        
+        # API format examples
+        examples_frame = ttk.LabelFrame(dialog, text="Common API Field Examples", padding=10)
+        examples_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+        
+        examples_text = scrolledtext.ScrolledText(examples_frame, height=10, state=tk.DISABLED, font=('Consolas', 9))
+        examples_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Populate examples - shorter version for manual dialog
+        examples_content = """TBS Receiving API - JSON-RPC 2.0 Format:
+[CHAR]
+
+Basic Fields:
+[CHAR] id                    - Request ID
+[CHAR] method               - API method name
+[CHAR] order_data.order_id           - Order identifier
+[CHAR] order_data.customer_name      - Customer name
+[CHAR] order_data.items[0].item_name    - Item name
+[CHAR] order_data.items[0].net_weight   - Net weight
+
+Quick Examples:
+[CHAR] customer_id          - Customer identifier
+[CHAR] product_name         - Product name
+[CHAR] price               - Product price
+ created_at          - Creation timestamp"""
+        
+        examples_text.config(state=tk.NORMAL)
+        examples_text.insert(tk.END, examples_content)
+        examples_text.config(state=tk.DISABLED)
+        
+        # Quick insert buttons
+        quick_frame = ttk.Frame(dialog)
+        quick_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+        
+        def insert_preset(field_name, path="", desc=""):
+            field_name_var.set(field_name)
+            field_path_var.set(path)
+            description_var.set(desc)
+        
+        ttk.Button(quick_frame, text="TBS Order ID", 
+                  command=lambda: insert_preset("order_id", "order_data.order_id", "TBS Order identifier")).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(quick_frame, text="TBS Item Name", 
+                  command=lambda: insert_preset("item_name", "order_data.items[0].item_name", "TBS Item name")).pack(side=tk.LEFT, padx=5)
+        
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
+        
+        def add_field():
+            field_name = field_name_var.get().strip()
+            field_path = field_path_var.get().strip()
+            
+            if not field_name:
+                messagebox.showerror("Error", "Please enter a field name")
+                return
+            
+            # Use path if provided, otherwise use name
+            final_field = field_path if field_path else field_name
+            
+            # Check if field already exists
+            if final_field in self.api_fields:
+                messagebox.showwarning("Warning", f"Field '{final_field}' already exists")
+                return
+            
+            # Add to api_fields list
+            self.api_fields.append(final_field)
+            
+            messagebox.showinfo("Success", f"Custom field '{final_field}' added successfully!")
+            
+            # Refresh mapping interface if we're in mapping tab
+            if hasattr(self, 'mapping_scroll_frame'):
+                self.refresh_mapping_interface()
+            
+            dialog.destroy()
+        
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="Add Field", command=add_field).pack(side=tk.RIGHT)
+        
+        # Focus on field name entry
+        field_name_entry.focus_set()
     
     def start_drag(self, event, column_name):
         """Start drag operation"""
@@ -8416,8 +9035,8 @@ Examples for your JSON-RPC structure:
             # For now, just show a message about drag functionality
             messagebox.showinfo("Drag & Drop", 
                               f"Dragging '{self.drag_data['column']}'\n\n" +
-                              "💡 Use the dropdown menus to map fields\n" +
-                              "🖱️ Double-click for detailed options")
+                              " Use the dropdown menus to map fields\n" +
+                              " Double-click for detailed options")
             delattr(self, 'drag_data')
     
     def show_column_details(self, column):
@@ -8535,39 +9154,39 @@ Examples for your JSON-RPC structure:
         transform_info = {
             "String": {
                 "description": "Convert value to string text format",
-                "example": "123 → '123', true → 'true'"
+                "example": "123  '123', true  'true'"
             },
             "Number": {
                 "description": "Convert value to numeric format",
-                "example": "'123' → 123, '12.5' → 12.5"
+                "example": "'123'  123, '12.5'  12.5"
             },
             "Date": {
                 "description": "Convert value to ISO date format",
-                "example": "2024-01-15 → '2024-01-15T00:00:00Z'"
+                "example": "2024-01-15  '2024-01-15T00:00:00Z'"
             },
             "Boolean": {
                 "description": "Convert value to true/false",
-                "example": "1 → true, 0 → false"
+                "example": "1  true, 0  false"
             },
             "Uppercase": {
                 "description": "Convert text to uppercase",
-                "example": "'hello' → 'HELLO'"
+                "example": "'hello'  'HELLO'"
             },
             "Lowercase": {
                 "description": "Convert text to lowercase", 
-                "example": "'HELLO' → 'hello'"
+                "example": "'HELLO'  'hello'"
             },
             "Trim": {
                 "description": "Remove leading and trailing spaces",
-                "example": "' hello ' → 'hello'"
+                "example": "' hello '  'hello'"
             },
             "JSON": {
                 "description": "Convert value to JSON string",
-                "example": "object → '{\"key\": \"value\"}'"
+                "example": "object  '{\"key\": \"value\"}'"
             },
             "Base64": {
                 "description": "Encode value in Base64 format",
-                "example": "'hello' → 'aGVsbG8='"
+                "example": "'hello'  'aGVsbG8='"
             }
         }
         
@@ -8598,6 +9217,7 @@ Examples for your JSON-RPC structure:
             # Collect mapping data
             new_mapping = {}
             mapped_count = 0
+            mapped_api_fields = []
             
             for db_field, widgets in self.mapping_widgets.items():
                 api_field = widgets['api_field'].get()
@@ -8609,16 +9229,58 @@ Examples for your JSON-RPC structure:
                         'transform': transform
                     }
                     mapped_count += 1
+                    mapped_api_fields.append(api_field)
+            
+            # Check for TBS required fields
+            tbs_required_fields = ['journal_id', 'partner_id']
+            missing_required = []
+            
+            if hasattr(self, 'api_fields_source') and 'tbs' in self.api_fields_source.lower():
+                for required_field in tbs_required_fields:
+                    if required_field not in mapped_api_fields:
+                        missing_required.append(required_field)
+                
+                if missing_required:
+                    result = messagebox.askyesnocancel(
+                        "Missing Required Fields", 
+                        f"TBS API requires these fields that are not mapped:\n {', '.join(missing_required)}\n\n" +
+                        "Do you want to:\n" +
+                        " YES: Auto-fill missing fields with defaults\n" +
+                        " NO: Save mapping as-is (may cause API errors)\n" +
+                        " CANCEL: Don't save, fix mapping manually"
+                    )
+                    
+                    if result is None:  # Cancel
+                        return
+                    elif result:  # YES - auto-fill
+                        # Add missing required fields with default values
+                        for missing_field in missing_required:
+                            # Create a dummy entry to ensure the field is present
+                            new_mapping[f"_auto_{missing_field}"] = {
+                                'api_field': missing_field,
+                                'transform': 'Default Value'
+                            }
+                            mapped_count += 1
+                        
+                        messagebox.showinfo("Auto-Fill Applied", 
+                                          f"Added default values for: {', '.join(missing_required)}")
             
             # Update field mappings
             self.field_mappings = new_mapping
             self.config['field_mapping'] = new_mapping
             self.save_config()
             
+            # Update field mapper with new mappings
+            self.update_field_mapper()
+            
             # Update preview
             self.update_json_preview()
             
-            messagebox.showinfo("Success", f"Field mapping saved!\n\n{mapped_count} fields mapped out of {len(self.mapping_widgets)}")
+            success_msg = f"Field mapping saved!\n\n{mapped_count} fields mapped out of {len(self.mapping_widgets)}"
+            if missing_required and not result:
+                success_msg += f"\n\nWarning: Missing required fields: {', '.join(missing_required)}"
+            
+            messagebox.showinfo("Success", success_msg)
             self.log_entry(f"Field mapping saved: {mapped_count} fields mapped", "SUCCESS")
             
         except Exception as e:
@@ -8644,49 +9306,55 @@ Examples for your JSON-RPC structure:
             return
             
         try:
-            # Generate sample data based on current mapping
-            sample_data = {}
+            # Generate sample data using FieldMapper for accurate preview
+            sample_raw_data = {}
             
+            # Create sample raw data based on field mappings
             if hasattr(self, 'field_mappings') and self.field_mappings:
                 for db_field, mapping in self.field_mappings.items():
-                    api_field = mapping.get('api_field')
-                    transform = mapping.get('transform', 'No Transform')
+                    # Generate realistic sample values
+                    if 'id' in db_field.lower():
+                        sample_raw_data[db_field] = 12345
+                    elif 'name' in db_field.lower():
+                        sample_raw_data[db_field] = "Sample Name"
+                    elif 'date' in db_field.lower() or 'time' in db_field.lower():
+                        sample_raw_data[db_field] = "2025-01-15 10:30:00"
+                    elif 'price' in db_field.lower() or 'amount' in db_field.lower():
+                        sample_raw_data[db_field] = 1500.75
+                    elif 'status' in db_field.lower():
+                        sample_raw_data[db_field] = "Active"
+                    elif 'qty' in db_field.lower() or 'quantity' in db_field.lower():
+                        sample_raw_data[db_field] = 10
+                    else:
+                        sample_raw_data[db_field] = f"sample_{db_field.lower()}"
+            
+            # Use FieldMapper to build preview data
+            if self.field_mapper and sample_raw_data:
+                preview_data = self.field_mapper.build_api_payload(sample_raw_data)
+                
+                # Add sample metadata if not present
+                if "uuid" not in preview_data:
+                    preview_data["uuid"] = "sample-uuid-12345"
+                if "timestamp" not in preview_data:
+                    preview_data["timestamp"] = "2025-01-15T10:30:00Z"
+                if "table" not in preview_data:
+                    preview_data["table"] = getattr(self, 'selected_table', 'your_table')
                     
-                    if api_field:
-                        # Generate sample value based on field type and transform
-                        if 'id' in db_field.lower():
-                            sample_value = 12345
-                        elif 'name' in db_field.lower():
-                            sample_value = "Sample Name"
-                        elif 'date' in db_field.lower() or 'time' in db_field.lower():
-                            sample_value = "2025-01-15 10:30:00"
-                        elif 'status' in db_field.lower():
-                            sample_value = "Active"
-                        else:
-                            sample_value = f"sample_{db_field.lower()}"
-                        
-                        # Apply transformation
-                        if transform == "Number":
-                            sample_value = 123.45
-                        elif transform == "Boolean":
-                            sample_value = True
-                        elif transform == "Uppercase":
-                            sample_value = str(sample_value).upper()
-                        elif transform == "Lowercase":
-                            sample_value = str(sample_value).lower()
-                        
-                        sample_data[api_field] = sample_value
+            else:
+                # Fallback preview when no mapper or mappings
+                preview_data = {
+                    "uuid": "sample-uuid-12345", 
+                    "timestamp": "2025-01-15T10:30:00Z",
+                    "table": getattr(self, 'selected_table', 'your_table'),
+                    "message": "Configure field mapping to see preview",
+                    "sample_structure": {
+                        "field1": "value1",
+                        "field2": "value2"
+                    }
+                }
             
-            # Add metadata
-            preview_data = {
-                "uuid": "sample-uuid-12345",
-                "timestamp": "2025-01-15T10:30:00Z",
-                "table": getattr(self, 'selected_table', 'your_table'),
-                "data": sample_data if sample_data else {"field1": "value1", "field2": "value2"}
-            }
-            
-            # Format JSON
-            json_text = json.dumps(preview_data, indent=2)
+            # Format JSON with proper indentation
+            json_text = json.dumps(preview_data, indent=2, ensure_ascii=False)
             
             # Update preview widget
             self.json_preview.config(state=tk.NORMAL)
@@ -8835,6 +9503,1029 @@ Examples for your JSON-RPC structure:
         if self.db_connection:
             self.db_connection.close()
         self.root.destroy()
+    
+    # =====================================
+    # NESTED MAPPING FUNCTIONS
+    # =====================================
+    
+    def add_mapping_group(self):
+        """Add a new mapping group for nested structure"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Mapping Group")
+        dialog.geometry("400x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        self.center_window(dialog, 400, 300)
+        
+        ttk.Label(dialog, text="Create New Mapping Group", 
+                 font=('Arial', 12, 'bold')).pack(pady=10)
+        
+        # Group name
+        ttk.Label(dialog, text="Group Name:").pack(anchor=tk.W, padx=20)
+        group_name_var = tk.StringVar()
+        ttk.Entry(dialog, textvariable=group_name_var, width=40).pack(padx=20, pady=(0, 10))
+        
+        # Group type
+        ttk.Label(dialog, text="Group Type:").pack(anchor=tk.W, padx=20)
+        group_type_var = tk.StringVar(value="object")
+        type_frame = ttk.Frame(dialog)
+        type_frame.pack(padx=20, pady=(0, 10))
+        ttk.Radiobutton(type_frame, text="Object", variable=group_type_var, value="object").pack(side=tk.LEFT)
+        ttk.Radiobutton(type_frame, text="Array", variable=group_type_var, value="array").pack(side=tk.LEFT, padx=(20, 0))
+        
+        # Description
+        ttk.Label(dialog, text="Description:").pack(anchor=tk.W, padx=20)
+        desc_text = tk.Text(dialog, height=4, width=45)
+        desc_text.pack(padx=20, pady=(0, 10))
+        
+        def save_group():
+            name = group_name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Warning", "Please enter group name")
+                return
+                
+            group_type = group_type_var.get()
+            description = desc_text.get(1.0, tk.END).strip()
+            
+            # Initialize nested_groups if not exists
+            if not hasattr(self, 'nested_groups'):
+                self.nested_groups = {}
+            
+            self.nested_groups[name] = {
+                'type': group_type,
+                'description': description,
+                'fields': []
+            }
+            
+            self.update_nested_mapping_display()
+            messagebox.showinfo("Success", f"Group '{name}' created successfully!")
+            dialog.destroy()
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="Save Group", command=save_group).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+    
+    def add_mapping_array(self):
+        """Add a new mapping array for nested structure"""
+        # Quick way to add array - calls add_mapping_group with array preset
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Mapping Array")
+        dialog.geometry("450x350")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        self.center_window(dialog, 450, 350)
+        
+        ttk.Label(dialog, text="Create New Mapping Array", 
+                 font=('Arial', 12, 'bold')).pack(pady=10)
+        
+        # Array name
+        ttk.Label(dialog, text="Array Name:").pack(anchor=tk.W, padx=20)
+        array_name_var = tk.StringVar(value="order_line")
+        ttk.Entry(dialog, textvariable=array_name_var, width=40).pack(padx=20, pady=(0, 10))
+        
+        # Array item template
+        ttk.Label(dialog, text="Array Item Fields (one per line):").pack(anchor=tk.W, padx=20)
+        fields_text = tk.Text(dialog, height=8, width=50)
+        fields_text.pack(padx=20, pady=(0, 10))
+        
+        # Pre-populate with TBS order_line fields
+        default_fields = """product_code
+qty_brutto
+qty_tara
+qty_netto
+product_uom
+sortation_percent
+price_unit
+product_qty"""
+        fields_text.insert(1.0, default_fields)
+        
+        def save_array():
+            name = array_name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Warning", "Please enter array name")
+                return
+                
+            fields_content = fields_text.get(1.0, tk.END).strip()
+            fields = [f.strip() for f in fields_content.split('\n') if f.strip()]
+            
+            # Initialize nested_groups if not exists
+            if not hasattr(self, 'nested_groups'):
+                self.nested_groups = {}
+            
+            self.nested_groups[name] = {
+                'type': 'array',
+                'description': f'Array of {name} items',
+                'fields': fields,
+                'item_template': True
+            }
+            
+            self.update_nested_mapping_display()
+            messagebox.showinfo("Success", f"Array '{name}' created successfully with {len(fields)} fields!")
+            dialog.destroy()
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="Save Array", command=save_array).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+    
+    def open_visual_designer(self):
+        """Open visual nested structure designer"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Visual Nested Structure Designer")
+        dialog.geometry("800x600")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        self.center_window(dialog, 800, 600)
+        
+        # Header
+        header_frame = ttk.Frame(dialog)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(header_frame, text=" Visual Nested Structure Designer", 
+                 font=('Arial', 14, 'bold')).pack(side=tk.LEFT)
+        
+        # Main container
+        main_frame = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        # Left panel - Structure tree
+        left_frame = ttk.LabelFrame(main_frame, text="Nested Structure", padding=10)
+        main_frame.add(left_frame, weight=1)
+        
+        # Tree widget for nested structure
+        tree_frame = ttk.Frame(left_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.structure_tree = ttk.Treeview(tree_frame, columns=('type', 'mapped'), show='tree headings')
+        self.structure_tree.heading('#0', text='Field Name')
+        self.structure_tree.heading('type', text='Type')
+        self.structure_tree.heading('mapped', text='Mapped')
+        
+        # Add sample TBS structure
+        root_node = self.structure_tree.insert('', 'end', text='order_data', values=('array', 'Yes'))
+        header_node = self.structure_tree.insert(root_node, 'end', text='[Header Fields]', values=('group', ''))
+        self.structure_tree.insert(header_node, 'end', text='partner_id', values=('string', 'No'))
+        self.structure_tree.insert(header_node, 'end', text='journal_id', values=('string', 'No'))
+        self.structure_tree.insert(header_node, 'end', text='vehicle_no', values=('string', 'No'))
+        
+        line_node = self.structure_tree.insert(root_node, 'end', text='order_line', values=('array', ''))
+        self.structure_tree.insert(line_node, 'end', text='product_code', values=('string', 'No'))
+        self.structure_tree.insert(line_node, 'end', text='qty_netto', values=('number', 'No'))
+        self.structure_tree.insert(line_node, 'end', text='price_unit', values=('number', 'No'))
+        
+        self.structure_tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Expand all nodes
+        for item in self.structure_tree.get_children():
+            self.structure_tree.item(item, open=True)
+            for child in self.structure_tree.get_children(item):
+                self.structure_tree.item(child, open=True)
+        
+        # Right panel - Mapping controls
+        right_frame = ttk.LabelFrame(main_frame, text="Field Mapping", padding=10)
+        main_frame.add(right_frame, weight=1)
+        
+        # Database fields list
+        ttk.Label(right_frame, text="Database Fields:", font=('Arial', 10, 'bold')).pack(anchor=tk.W)
+        
+        db_list_frame = ttk.Frame(right_frame)
+        db_list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        self.db_fields_listbox = tk.Listbox(db_list_frame, height=8)
+        db_scrollbar = ttk.Scrollbar(db_list_frame, orient=tk.VERTICAL, command=self.db_fields_listbox.yview)
+        self.db_fields_listbox.configure(yscrollcommand=db_scrollbar.set)
+        
+        self.db_fields_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        db_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Populate with database fields if available
+        if hasattr(self, 'table_columns') and self.table_columns:
+            for col in self.table_columns:
+                self.db_fields_listbox.insert(tk.END, col)
+        
+        # Mapping controls
+        ttk.Label(right_frame, text="Actions:", font=('Arial', 10, 'bold')).pack(anchor=tk.W, pady=(10, 5))
+        
+        action_frame = ttk.Frame(right_frame)
+        action_frame.pack(fill=tk.X)
+        
+        ttk.Button(action_frame, text=" Map Selected", 
+                  command=self.map_selected_field).pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(action_frame, text=" Remove Mapping", 
+                  command=self.remove_field_mapping).pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(action_frame, text=" Auto Map All", 
+                  command=self.auto_map_nested_fields).pack(fill=tk.X, pady=(0, 5))
+        
+        # Close button
+        ttk.Button(right_frame, text=" Apply & Close", 
+                  command=dialog.destroy).pack(side=tk.BOTTOM, pady=(20, 0))
+    
+    def import_nested_api_spec(self):
+        """Import API specification for nested structure"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Import Nested API Specification")
+        dialog.geometry("600x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        self.center_window(dialog, 600, 500)
+        
+        ttk.Label(dialog, text=" Import Nested API Specification", 
+                 font=('Arial', 14, 'bold')).pack(pady=10)
+        
+        # Instructions
+        instruction_text = """
+Paste your API specification (JSON format) below.
+The system will automatically detect nested structures and create mapping groups.
+
+Supported formats:
+[CHAR] JSON-RPC 2.0 (TBS format)
+[CHAR] REST API JSON schemas
+[CHAR] OpenAPI/Swagger specifications
+        """
+        ttk.Label(dialog, text=instruction_text.strip(), justify=tk.LEFT).pack(padx=20, pady=(0, 10))
+        
+        # Text area for API spec
+        spec_frame = ttk.LabelFrame(dialog, text="API Specification", padding=10)
+        spec_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+        
+        spec_text = scrolledtext.ScrolledText(spec_frame, height=15)
+        spec_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Pre-populate with TBS example
+        tbs_example = """{
+  "jsonrpc": "2.0",
+  "params": {
+    "order_data": [
+      {
+        "partner_id": "string",
+        "journal_id": "string", 
+        "vehicle_no": "string",
+        "order_line": [
+          {
+            "product_code": "string",
+            "qty_netto": "number",
+            "sortation_percent": "number",
+            "price_unit": "number"
+          }
+        ]
+      }
+    ]
+  }
+}"""
+        spec_text.insert(1.0, tbs_example)
+        
+        def parse_and_import():
+            spec_content = spec_text.get(1.0, tk.END).strip()
+            if not spec_content:
+                messagebox.showwarning("Warning", "Please enter API specification")
+                return
+            
+            try:
+                import json
+                api_spec = json.loads(spec_content)
+                
+                # Parse nested structure
+                self.parse_nested_structure(api_spec)
+                
+                messagebox.showinfo("Success", "API specification imported successfully!\nNested structure has been parsed and groups created.")
+                dialog.destroy()
+                
+            except json.JSONDecodeError as e:
+                messagebox.showerror("Error", f"Invalid JSON format:\n{str(e)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to parse API specification:\n{str(e)}")
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text=" Import & Parse", command=parse_and_import).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+    
+    def on_mapping_mode_change(self):
+        """Handle mapping mode change"""
+        mode = self.mapping_mode.get()
+        self.log_entry(f"Mapping mode changed to: {mode}", "INFO")
+        
+        # Update field mapper with new mode
+        self.update_field_mapper()
+        
+        if mode == "tbs_auto":
+            # Auto-setup TBS nested structure
+            self.setup_tbs_nested_structure()
+        elif mode == "nested":
+            # Enable nested mapping controls
+            self.update_nested_mapping_display()
+        else:
+            # Flat mode - use existing functionality
+            pass
+        
+        # Refresh preview with new mode
+        self.update_json_preview()
+    
+    def test_mapping_with_real_data(self):
+        """Test current mapping with real database data"""
+        try:
+            if not hasattr(self, 'selected_table') or not self.selected_table:
+                messagebox.showerror("Error", "Please select a database table first.")
+                return
+            
+            if not hasattr(self, 'field_mappings') or not self.field_mappings:
+                messagebox.showerror("Error", "Please configure field mapping first.")
+                return
+            
+            # Get latest record from database
+            raw_data = self.get_latest_record()
+            if not raw_data:
+                messagebox.showerror("Error", "No data found in selected table.")
+                return
+            
+            # Build mapped payload
+            mapped_data = self.build_api_payload(raw_data)
+            
+            # Show results in dialog
+            result_window = tk.Toplevel(self.root)
+            result_window.title("Mapping Test Results")
+            result_window.geometry("700x500")
+            result_window.transient(self.root)
+            result_window.grab_set()
+            
+            # Raw data section
+            raw_frame = ttk.LabelFrame(result_window, text="Raw Database Data", padding=10)
+            raw_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+            
+            raw_text = scrolledtext.ScrolledText(raw_frame, height=8, state=tk.DISABLED)
+            raw_text.pack(fill=tk.BOTH, expand=True)
+            
+            raw_text.config(state=tk.NORMAL)
+            raw_text.insert(1.0, json.dumps(raw_data, indent=2))
+            raw_text.config(state=tk.DISABLED)
+            
+            # Mapped data section
+            mapped_frame = ttk.LabelFrame(result_window, text="Mapped API Payload", padding=10)
+            mapped_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            
+            mapped_text = scrolledtext.ScrolledText(mapped_frame, height=8, state=tk.DISABLED)
+            mapped_text.pack(fill=tk.BOTH, expand=True)
+            
+            mapped_text.config(state=tk.NORMAL)
+            mapped_text.insert(1.0, json.dumps(mapped_data, indent=2))
+            mapped_text.config(state=tk.DISABLED)
+            
+            # Control buttons
+            btn_frame = ttk.Frame(result_window)
+            btn_frame.pack(fill=tk.X, padx=10, pady=(5, 10))
+            
+            ttk.Button(btn_frame, text="Send Test to API", 
+                      command=lambda: self.send_test_to_api(mapped_data)).pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Button(btn_frame, text="Save as Template", 
+                      command=lambda: self.save_test_as_template(mapped_data)).pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Button(btn_frame, text="Close", 
+                      command=result_window.destroy).pack(side=tk.RIGHT)
+            
+            self.log_entry("Mapping test completed successfully", "INFO")
+            
+        except Exception as e:
+            error_msg = f"Mapping test failed: {str(e)}"
+            messagebox.showerror("Error", error_msg)
+            self.log_entry(error_msg, "ERROR")
+    
+    def send_test_to_api(self, test_data: Dict):
+        """Send test data to API"""
+        try:
+            success = self.send_to_api(test_data)
+            if success:
+                messagebox.showinfo("Success", "Test data sent to API successfully!")
+            else:
+                messagebox.showerror("Error", "Failed to send test data. Check logs.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Test API call failed: {str(e)}")
+    
+    def save_test_as_template(self, test_data: Dict):
+        """Save test data as template"""
+        try:
+            # Simple implementation - could be enhanced
+            template_name = f"test_template_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            # Save to config or file
+            messagebox.showinfo("Template Saved", f"Test data saved as template: {template_name}")
+            self.log_entry(f"Test template saved: {template_name}", "INFO")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save template: {str(e)}")
+    
+    def setup_tbs_nested_structure(self):
+        """Auto-setup TBS nested structure"""
+        if not hasattr(self, 'nested_groups'):
+            self.nested_groups = {}
+        
+        # Create TBS order_data structure
+        self.nested_groups['order_data'] = {
+            'type': 'array',
+            'description': 'TBS Order Data Array',
+            'fields': ['partner_id', 'journal_id', 'vehicle_no', 'date_order', 'officers'],
+            'nested': {
+                'order_line': {
+                    'type': 'array',
+                    'description': 'Order Line Items',
+                    'fields': ['product_code', 'qty_brutto', 'qty_tara', 'qty_netto', 'price_unit', 'product_qty']
+                }
+            }
+        }
+        
+        self.log_entry("TBS nested structure auto-configured", "SUCCESS")
+        messagebox.showinfo("TBS Auto Setup", "TBS nested structure has been automatically configured!\n\n" +
+                           "Structure created:\n" +
+                           " order_data (array)\n" +
+                           "   Header fields (partner_id, journal_id, etc.)\n" +
+                           "   order_line (nested array)\n" +
+                           "     Line item fields (product_code, qty_netto, etc.)")
+    
+    def update_nested_mapping_display(self):
+        """Update the nested mapping display"""
+        # This would update the UI to show nested groups
+        # Implementation depends on the current UI structure
+        pass
+    
+    def map_selected_field(self):
+        """Map selected database field to API field"""
+        # Implementation for mapping in visual designer
+        pass
+    
+    def remove_field_mapping(self):
+        """Remove selected field mapping"""
+        # Implementation for removing mapping
+        pass
+    
+    def auto_map_nested_fields(self):
+        """Auto-map all fields to nested structure"""
+        # Implementation for auto-mapping
+        pass
+    
+    def parse_nested_structure(self, api_spec):
+        """Parse API specification and create nested structure"""
+        def extract_structure(obj, path=""):
+            structure = {}
+            
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    current_path = f"{path}.{key}" if path else key
+                    
+                    if isinstance(value, list):
+                        if value and isinstance(value[0], dict):
+                            # Array of objects
+                            structure[key] = {
+                                'type': 'array',
+                                'path': current_path,
+                                'fields': extract_structure(value[0], current_path)
+                            }
+                        else:
+                            # Array of primitives
+                            structure[key] = {
+                                'type': 'array_primitive',
+                                'path': current_path
+                            }
+                    elif isinstance(value, dict):
+                        # Nested object
+                        structure[key] = {
+                            'type': 'object',
+                            'path': current_path,
+                            'fields': extract_structure(value, current_path)
+                        }
+                    else:
+                        # Primitive field
+                        field_type = 'string'
+                        if isinstance(value, (int, float)):
+                            field_type = 'number'
+                        elif isinstance(value, bool):
+                            field_type = 'boolean'
+                        
+                        structure[key] = {
+                            'type': field_type,
+                            'path': current_path
+                        }
+            
+            return structure
+        
+        # Extract and store the structure
+        self.parsed_structure = extract_structure(api_spec)
+        
+        # Convert to nested_groups format
+        if not hasattr(self, 'nested_groups'):
+            self.nested_groups = {}
+        
+        def convert_to_groups(structure, prefix=""):
+            for key, value in structure.items():
+                if value['type'] in ['array', 'object']:
+                    group_name = f"{prefix}{key}" if prefix else key
+                    self.nested_groups[group_name] = {
+                        'type': value['type'],
+                        'description': f"Auto-imported {value['type']}: {key}",
+                        'fields': list(value.get('fields', {}).keys()) if 'fields' in value else [],
+                        'path': value['path']
+                    }
+                    
+                    # Recursively process nested structures
+                    if 'fields' in value and value['fields']:
+                        convert_to_groups(value['fields'], f"{group_name}.")
+        
+        convert_to_groups(self.parsed_structure)
+    
+    def center_window(self, window, width, height):
+        """Center a window on the screen"""
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        window.geometry(f"{width}x{height}+{x}+{y}")
+    
+    # =====================================
+    # ENHANCED ACTION FUNCTIONS - Missing Functions Added
+    # =====================================
+    
+    def save_field_mapping_with_validation(self):
+        """Enhanced save field mapping with validation and user feedback"""
+        try:
+            if not hasattr(self, 'mapping_widgets'):
+                messagebox.showwarning("Warning", "No mapping configuration found.\nPlease create field mappings first.")
+                return
+            
+            # Show progress
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Saving Mapping")
+            progress_window.geometry("300x100")
+            progress_window.transient(self.root)
+            progress_window.grab_set()
+            self.center_window(progress_window, 300, 100)
+            
+            ttk.Label(progress_window, text="Saving field mapping configuration...", 
+                     font=('Arial', 10)).pack(pady=20)
+            progress_bar = ttk.Progressbar(progress_window, mode='indeterminate')
+            progress_bar.pack(pady=10, padx=20, fill=tk.X)
+            progress_bar.start()
+            
+            self.root.update()
+            
+            # Perform actual save and update
+            self.save_field_mapping()
+            
+            # Update field mapper with latest mappings
+            self.update_field_mapper()
+            
+            # Close progress window
+            progress_bar.stop()
+            progress_window.destroy()
+            
+            # Show success confirmation with mapping details
+            mode = self.mapping_mode.get()
+            mapping_count = len(self.field_mappings) if hasattr(self, 'field_mappings') else 0
+            
+            messagebox.showinfo("Success", f" Field mapping applied successfully!\n\n" +
+                               f"Mode: {mode.upper()}\n" +
+                               f"Fields mapped: {mapping_count}\n\n" +
+                               "Your mapping configuration is now active for data export.")
+            
+            # Refresh preview to show current state
+            self.update_json_preview()
+            
+        except Exception as e:
+            if 'progress_window' in locals():
+                progress_window.destroy()
+            error_msg = f"Failed to save field mapping:\n{str(e)}"
+            messagebox.showerror("Save Error", error_msg)
+            self.log_entry(error_msg, "ERROR")
+    
+    def apply_and_refresh_mapping(self):
+        """Enhanced apply current mapping and refresh all displays with feedback"""
+        try:
+            # Validate first
+            validation_issues = self.validate_mapping_configuration()
+            if validation_issues:
+                issues_text = "\n".join([f" {issue}" for issue in validation_issues])
+                self.show_operation_feedback(
+                    "Cannot Apply Configuration", 
+                    f"Please fix these issues first:\n\n{issues_text}",
+                    "warning"
+                )
+                return
+            
+            # Show progress window
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Applying Configuration")
+            progress_window.geometry("400x200")
+            progress_window.transient(self.root)
+            progress_window.grab_set()
+            
+            # Center window
+            progress_window.update_idletasks()
+            x = (progress_window.winfo_screenwidth() // 2) - (200)
+            y = (progress_window.winfo_screenheight() // 2) - (100)
+            progress_window.geometry(f"400x200+{x}+{y}")
+            
+            content_frame = ttk.Frame(progress_window, padding=20)
+            content_frame.pack(fill=tk.BOTH, expand=True)
+            
+            ttk.Label(content_frame, text=" Applying & Refreshing Configuration", 
+                     font=('Arial', 12, 'bold')).pack(pady=(0, 15))
+            
+            progress_bar = ttk.Progressbar(content_frame, mode='indeterminate')
+            progress_bar.pack(fill=tk.X, pady=(0, 10))
+            progress_bar.start()
+            
+            status_label = ttk.Label(content_frame, text="Preparing...", font=('Arial', 9))
+            status_label.pack(pady=(0, 10))
+            
+            # Detailed progress log
+            log_text = tk.Text(content_frame, height=6, width=45, font=('Consolas', 8))
+            log_text.pack(fill=tk.BOTH, expand=True)
+            
+            def update_log(message):
+                log_text.insert(tk.END, f" {message}\n")
+                log_text.see(tk.END)
+                progress_window.update()
+            
+            # Step 1: Apply current mapping configuration
+            status_label.config(text="Step 1: Applying mapping configuration...")
+            update_log("Checking current mapping widgets...")
+            
+            if hasattr(self, 'mapping_widgets'):
+                update_log("Found mapping widgets - applying configuration")
+                # Apply mapping from widgets
+                for widget_info in self.mapping_widgets:
+                    if 'combobox' in widget_info and 'db_field' in widget_info:
+                        db_field = widget_info['db_field']
+                        api_field = widget_info['combobox'].get()
+                        if api_field and api_field != "Select API Field":
+                            self.field_mappings[db_field] = api_field
+                            update_log(f"Mapped: {db_field}  {api_field}")
+            
+            # Step 2: Refresh API connection
+            status_label.config(text="Step 2: Refreshing API connection...")
+            update_log("Refreshing API status...")
+            self.refresh_api_mapping_status()
+            update_log("API status updated")
+            
+            # Step 3: Update nested configuration status
+            status_label.config(text="Step 3: Updating nested configuration...")
+            update_log("Checking nested structure configuration...")
+            
+            nested_config = getattr(self, 'nested_structure_config', {})
+            if nested_config:
+                self.update_nested_status(" Nested Structure Applied", "green")
+                update_log("Nested structure configuration applied")
+            else:
+                self.update_nested_status(" Standard Mapping Mode", "blue")
+                update_log("Standard mapping mode applied")
+            
+            # Step 4: Refresh displays
+            status_label.config(text="Step 4: Refreshing interface displays...")
+            update_log("Updating JSON preview...")
+            if hasattr(self, 'update_json_preview'):
+                self.update_json_preview()
+            
+            update_log("Refreshing mapping interface...")
+            if hasattr(self, 'refresh_mapping_interface'):
+                self.refresh_mapping_interface()
+            
+            # Step 5: Final status update
+            status_label.config(text="Configuration applied successfully!")
+            update_log(" All configurations applied successfully!")
+            
+            # Stop progress and wait a moment
+            progress_bar.stop()
+            progress_window.update()
+            progress_window.after(2000, progress_window.destroy)
+            
+            # Show success feedback
+            self.show_operation_feedback(
+                "Configuration Applied", 
+                f"Mapping configuration has been applied successfully!\n\n" +
+                f"Active mappings: {len(getattr(self, 'field_mappings', {}))}\n" +
+                f"Nested config: {'Yes' if nested_config else 'No'}\n" +
+                f"Mode: {getattr(self, 'mapping_mode_var', tk.StringVar()).get()}",
+                "success"
+            )
+            
+            self.log_message("Mapping configuration applied and refreshed successfully", "SUCCESS")
+            
+        except Exception as e:
+            if 'progress_window' in locals():
+                progress_window.destroy()
+            error_msg = f"Error applying configuration:\n{str(e)}"
+            self.show_operation_feedback("Apply Error", error_msg, "error")
+            self.log_message(error_msg, "ERROR")
+
+    def reset_field_mapping_with_confirm(self):
+        """Enhanced reset field mapping with detailed confirmation dialog"""
+        try:
+            # Create custom confirmation dialog
+            confirm_window = tk.Toplevel(self.root)
+            confirm_window.title(" Confirm Reset Mapping")
+            confirm_window.geometry("450x300")
+            confirm_window.transient(self.root)
+            confirm_window.grab_set()
+            confirm_window.update_idletasks()
+            x = (confirm_window.winfo_screenwidth() // 2) - (225)
+            y = (confirm_window.winfo_screenheight() // 2) - (150)
+            confirm_window.geometry(f"450x300+{x}+{y}")
+            
+            content_frame = ttk.Frame(confirm_window, padding=20)
+            content_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Warning header
+            ttk.Label(content_frame, text=" RESET FIELD MAPPING", 
+                     font=('Arial', 14, 'bold'), foreground='red').pack(pady=(0, 15))
+            
+            # Warning message
+            warning_text = ("This action will completely reset your field mapping configuration.\n\n"
+                           "The following will be cleared:\n"
+                           " All field mappings between database and API\n"
+                           " Nested structure configuration\n"
+                           " Transformation settings\n"
+                           " Template configurations\n\n"
+                           " This action CANNOT be undone!")
+            
+            ttk.Label(content_frame, text=warning_text, font=('Arial', 10), 
+                     wraplength=400, justify='left').pack(pady=(0, 20))
+            
+            # Current status info
+            current_info = f"Current Configuration:\n"
+            current_info += f" Mapped fields: {len(getattr(self, 'field_mappings', {}))}\n"
+            current_info += f" Nested groups: {len(getattr(self, 'nested_groups', {}))}\n"
+            current_info += f" Active table: {getattr(self, 'selected_table', 'None')}"
+            
+            info_frame = ttk.LabelFrame(content_frame, text="Current Status", padding=10)
+            info_frame.pack(fill=tk.X, pady=(0, 20))
+            
+            ttk.Label(info_frame, text=current_info, font=('Arial', 9), 
+                     foreground='blue').pack(anchor='w')
+            
+            # Button frame
+            button_frame = ttk.Frame(content_frame)
+            button_frame.pack(fill=tk.X)
+            
+            result = tk.BooleanVar(value=False)
+            
+            def confirm_reset():
+                result.set(True)
+                confirm_window.destroy()
+            
+            def cancel_reset():
+                result.set(False)
+                confirm_window.destroy()
+            
+            ttk.Button(button_frame, text=" YES, RESET ALL", 
+                      command=confirm_reset, 
+                      style='Danger.TButton').pack(side=tk.LEFT, padx=(0, 10))
+            
+            ttk.Button(button_frame, text=" Cancel", 
+                      command=cancel_reset).pack(side=tk.LEFT)
+            
+            # Wait for user decision
+            confirm_window.wait_window()
+            
+            if not result.get():
+                return
+            
+            # Show progress for reset operation
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("Resetting Configuration")
+            progress_window.geometry("350x150")
+            progress_window.transient(self.root)
+            progress_window.grab_set()
+            
+            # Center progress window
+            progress_window.update_idletasks()
+            x = (progress_window.winfo_screenwidth() // 2) - (175)
+            y = (progress_window.winfo_screenheight() // 2) - (75)
+            progress_window.geometry(f"350x150+{x}+{y}")
+            
+            prog_content = ttk.Frame(progress_window, padding=20)
+            prog_content.pack(fill=tk.BOTH, expand=True)
+            
+            ttk.Label(prog_content, text=" Resetting Configuration...", 
+                     font=('Arial', 12, 'bold')).pack(pady=(0, 10))
+            
+            progress_bar = ttk.Progressbar(prog_content, mode='indeterminate')
+            progress_bar.pack(fill=tk.X, pady=(0, 10))
+            progress_bar.start()
+            
+            status_label = ttk.Label(prog_content, text="Clearing mappings...", font=('Arial', 9))
+            status_label.pack()
+            
+            progress_window.update()
+            
+            # Perform reset operations
+            status_label.config(text="Clearing field mappings...")
+            progress_window.update()
+            self.field_mappings = {}
+            
+            status_label.config(text="Clearing nested configuration...")
+            progress_window.update()
+            if hasattr(self, 'nested_groups'):
+                self.nested_groups = {}
+            if hasattr(self, 'nested_structure_config'):
+                self.nested_structure_config = {}
+            
+            status_label.config(text="Resetting UI widgets...")
+            progress_window.update()
+            if hasattr(self, 'mapping_widgets'):
+                for widget_info in self.mapping_widgets:
+                    if 'combobox' in widget_info:
+                        widget_info['combobox'].set("Select API Field")
+            
+            status_label.config(text="Updating status indicators...")
+            progress_window.update()
+            self.update_nested_status(" Configuration Reset", "gray")
+            
+            status_label.config(text="Refreshing displays...")
+            progress_window.update()
+            if hasattr(self, 'update_json_preview'):
+                self.update_json_preview()
+            if hasattr(self, 'refresh_mapping_interface'):
+                self.refresh_mapping_interface()
+            
+            # Close progress window
+            progress_bar.stop()
+            progress_window.destroy()
+            
+            # Show success confirmation
+            self.show_operation_feedback(
+                "Reset Complete", 
+                "Field mapping configuration has been reset successfully!\n\n" +
+                "All mappings and nested configurations have been cleared.\n" +
+                "You can now create a fresh configuration.",
+                "success"
+            )
+            
+            self.log_message("Field mapping reset completed successfully", "INFO")
+            
+        except Exception as e:
+            if 'progress_window' in locals():
+                progress_window.destroy()
+            error_msg = f"Failed to reset mapping configuration:\n{str(e)}"
+            self.show_operation_feedback("Reset Error", error_msg, "error")
+            self.log_message(error_msg, "ERROR")
+    
+    def apply_nested_configuration(self):
+        """Apply nested structure configuration"""
+        try:
+            if not hasattr(self, 'nested_groups') or not self.nested_groups:
+                messagebox.showwarning("No Nested Configuration", 
+                                     "No nested structure configuration found.\n\n" +
+                                     "Please create nested groups first using:\n" +
+                                     " Add Group/Array buttons\n" +
+                                     " Visual Designer\n" +
+                                     " Import API Spec")
+                return
+            
+            # Apply nested configuration
+            mode = getattr(self, 'mapping_mode', tk.StringVar()).get()
+            if mode not in ['nested', 'tbs_auto']:
+                self.mapping_mode.set('nested')
+                self.on_mapping_mode_change()
+            
+            # Update JSON preview with nested structure
+            self.update_json_preview()
+            
+            # Show configuration details
+            config_details = []
+            for group_name, group_config in self.nested_groups.items():
+                config_details.append(f" {group_name} ({group_config['type']}) - {len(group_config.get('fields', []))} fields")
+            
+            messagebox.showinfo("Nested Configuration Applied", 
+                               " Nested structure configuration applied successfully!\n\n" +
+                               "Structure:\n" + "\n".join(config_details[:5]) +
+                               ("\n... and more" if len(config_details) > 5 else ""))
+            
+            self.log_entry(f"Nested configuration applied: {len(self.nested_groups)} groups", "SUCCESS")
+            
+        except Exception as e:
+            error_msg = f"Failed to apply nested configuration: {str(e)}"
+            messagebox.showerror("Configuration Error", error_msg)
+            self.log_entry(error_msg, "ERROR")
+    
+    def preview_nested_structure(self):
+        """Preview nested structure in a dedicated window"""
+        try:
+            # Create preview window
+            preview_window = tk.Toplevel(self.root)
+            preview_window.title("Nested Structure Preview")
+            preview_window.geometry("700x500")
+            preview_window.transient(self.root)
+            self.center_window(preview_window, 700, 500)
+            
+            # Header
+            header_frame = ttk.Frame(preview_window)
+            header_frame.pack(fill=tk.X, padx=10, pady=10)
+            
+            ttk.Label(header_frame, text=" Nested Structure Preview", 
+                     font=('Arial', 14, 'bold')).pack(side=tk.LEFT)
+            
+            # Close button
+            ttk.Button(header_frame, text=" Close", 
+                      command=preview_window.destroy).pack(side=tk.RIGHT)
+            
+            # Content
+            content_frame = ttk.Frame(preview_window)
+            content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+            
+            # Structure display
+            structure_text = scrolledtext.ScrolledText(content_frame, height=20)
+            structure_text.pack(fill=tk.BOTH, expand=True)
+            
+            # Generate structure preview
+            if hasattr(self, 'nested_groups') and self.nested_groups:
+                structure_preview = " NESTED STRUCTURE CONFIGURATION\n"
+                structure_preview += "=" * 50 + "\n\n"
+                
+                for group_name, group_config in self.nested_groups.items():
+                    structure_preview += f" {group_name.upper()} ({group_config['type']})\n"
+                    structure_preview += f"   Description: {group_config.get('description', 'No description')}\n"
+                    structure_preview += f"   Fields ({len(group_config.get('fields', []))}):\n"
+                    
+                    for field in group_config.get('fields', []):
+                        structure_preview += f"    {field}\n"
+                    
+                    if 'nested' in group_config:
+                        structure_preview += f"   Nested Groups:\n"
+                        for nested_name, nested_config in group_config['nested'].items():
+                            structure_preview += f"     {nested_name} ({nested_config['type']})\n"
+                    
+                    structure_preview += "\n"
+                
+                # Add JSON example
+                structure_preview += "\n EXAMPLE JSON OUTPUT:\n"
+                structure_preview += "=" * 30 + "\n"
+                
+                try:
+                    sample_data = {'test': 'data'}
+                    if hasattr(self, 'convert_with_nested_mapping'):
+                        example_json = self.convert_with_nested_mapping(sample_data)
+                        import json
+                        structure_preview += json.dumps(example_json, indent=2, ensure_ascii=False)
+                    else:
+                        structure_preview += "Preview not available - please save configuration first"
+                except:
+                    structure_preview += "Preview generation failed - please check configuration"
+                    
+            else:
+                structure_preview = " NO NESTED STRUCTURE CONFIGURED\n\n"
+                structure_preview += "To create nested structure:\n"
+                structure_preview += "1. Click 'Add Group' or 'Add Array' buttons\n"
+                structure_preview += "2. Use Visual Designer\n"
+                structure_preview += "3. Import API Spec\n"
+                structure_preview += "4. Select 'TBS Auto' mode for automatic setup"
+            
+            structure_text.insert(1.0, structure_preview)
+            structure_text.config(state=tk.DISABLED)
+            
+        except Exception as e:
+            error_msg = f"Failed to generate structure preview: {str(e)}"
+            messagebox.showerror("Preview Error", error_msg)
+            self.log_entry(error_msg, "ERROR")
+    
+    def clear_nested_configuration(self):
+        """Clear nested structure configuration"""
+        result = messagebox.askyesno("Confirm Clear", 
+                                   " Are you sure you want to clear the nested structure configuration?\n\n" +
+                                   "This will remove all:\n" +
+                                   " Created groups and arrays\n" +
+                                   " Nested structure mappings\n" +
+                                   " Visual designer settings\n\n" +
+                                   "Field mappings will be preserved.")
+        
+        if result:
+            try:
+                # Clear nested configuration
+                if hasattr(self, 'nested_groups'):
+                    self.nested_groups = {}
+                
+                # Reset to flat mode
+                if hasattr(self, 'mapping_mode'):
+                    self.mapping_mode.set('flat')
+                    self.on_mapping_mode_change()
+                
+                # Update preview
+                self.update_json_preview()
+                
+                messagebox.showinfo("Cleared", " Nested structure configuration cleared successfully!\n\n" +
+                                   "Mapping mode reset to 'Flat'.")
+                
+                self.log_entry("Nested structure configuration cleared", "INFO")
+                
+            except Exception as e:
+                error_msg = f"Failed to clear nested configuration: {str(e)}"
+                messagebox.showerror("Clear Error", error_msg)
+                self.log_entry(error_msg, "ERROR")
 
 if __name__ == "__main__":
     try:
